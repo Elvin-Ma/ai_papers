@@ -33,4 +33,4 @@ NLP的半监督学习。 我们的工作大体上属于自然语言半监督学�
 ### 3.1 无监督预训练
 给定无监督tokens集合 , 我们使用标准语言模型目标（language modeling objective）来最大化以下似然函数：<br>
                     $L_1(u)=\sum_{i}^{}logP(u_i|u_{i-k}\,...,u_{i-1}; \Theta)$
-                    $u=\left{ u_1, ..., u_n \right}$
+                    $u=\left\{u_1, ..., u_n \right\}$
