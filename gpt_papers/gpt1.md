@@ -43,7 +43,9 @@ $$P(u)=softmax\left(h_{n} W_{e}^{T}\right)$$
 
 ### 3.2 Supervised fine-tuning
 在用等式1中的目标对模型进行训练后，我们针对被监督目标任务调整这些参数。我们假设一个带标签的数据集C \mathcal{C}C，其中每个实例由一系列输入标记 $x^{1}, \ldots, x^{m}$ 组成，这里面还包含一个标签y。这些输入通过我们预先训练的模型来获得最终transformer block的激活 $h_{l}^{m}$ , 然后将其输入一个附加的线性输出层, 参数 $W_{y}$ 预测y:
-$$P\left(y \mid x^{1}, \ldots x^{m}\right)=\operatorname{softmax}\left(h_{l}^{m} W_{y}\right)$$
+$$P\left(y \mid x^{1}, \ldots x^{m}\right)=softmax\left(h_{l}^{m} W_{y}\right)\ldots\ldots(3)$$
 
 它使我们去最大化如下函数：
-$$L_{2}=\sum_{x, y} \log P\left(y \mid x^{1}, \ldots, x^{m}\right)$$
+$$L_{2}=\sum_{x, y} \log P\left(y \mid x^{1}, \ldots, x^{m}\right)\ldots\ldots(4)$$
+我们还发现，将语言建模作为微调的辅助目标有助于学习（a）改进监督模型的泛化，以及（b）加速收敛。这与先前的工作是一致的[50，43]，他们也观察到了这种辅助目标的改进性能。具体来说，我们优化了以下目标（权重为λ）：
+$$L_{3}(\mathcal{C})=L_{2}(\mathcal{C})+\lambda * L_{1}(\mathcal{C})\ldots\ldots(5)$$
