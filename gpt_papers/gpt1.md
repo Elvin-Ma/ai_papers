@@ -52,3 +52,4 @@ $$L_{3}(\mathcal{C})=L_{2}(\mathcal{C})+\lambda * L_{1}(\mathcal{C})\ldots\ldots
 总的来说，我们在微调过程中需要的唯一额外参数是 $W_{y}$ ,以及分隔符标记的嵌入（embeddings）（在第3.3节中描述）.
 
 ![figure1](./gpt1_figure1.jpg)
+<center> 图1：（左）本文中使用的Transformer架构和训练目标。（右）用于在不同任务上进行微调的输入转换。我们将所有结构化输入转换为令牌序列，以供我们预训练模型处理，然后接上一个线性+softmax层。</center>
