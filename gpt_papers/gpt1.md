@@ -33,5 +33,5 @@ NLP的半监督学习。 我们的工作大体上属于自然语言半监督学�
 ### 3.1 无监督预训练
 给定无监督tokens集合 $\mathcal{U}=\left\lbrace u_{1}, \ldots, u_{n}\right\rbrace$ , 我们使用标准语言模型目标（language modeling objective）来最大化以下似然函数：<br>
                     $$L_{1}(\mathcal{U})=\sum_{i} \log P\left(u_{i} \mid u_{i-k}, \ldots, u_{i-1} ; \Theta\right)$$
-其中，k 是文本窗尺寸，条件概率 P 采用参数为 $\Theta$ 的神经网络建模。这些参数用SGD训练[15]
+其中，k 是文本窗尺寸，条件概率 P 采用参数为 $\Theta$ 的神经网络建模。这些参数用SGD训练[15].
                    
