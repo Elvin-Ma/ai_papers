@@ -50,3 +50,5 @@ $$L_{2}=\sum_{x, y} \log P\left(y \mid x^{1}, \ldots, x^{m}\right)\ldots\ldots(4
 我们还发现，将语言建模作为微调的辅助目标有助于学习（a）改进监督模型的泛化，以及（b）加速收敛。这与先前的工作是一致的[50，43]，他们也观察到了这种辅助目标的改进性能。具体来说，我们优化了以下目标（权重为λ）：
 $$L_{3}(\mathcal{C})=L_{2}(\mathcal{C})+\lambda * L_{1}(\mathcal{C})\ldots\ldots(5)$$
 总的来说，我们在微调过程中需要的唯一额外参数是 $W_{y}$ ,以及分隔符标记的嵌入（embeddings）（在第3.3节中描述）.
+
+![figure1](./gpt1_figure1.jpg)
