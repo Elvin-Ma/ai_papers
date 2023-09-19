@@ -35,7 +35,7 @@ NLP的半监督学习。 我们的工作大体上属于自然语言半监督学�
                     $$L_{1}(\mathcal{U})=\sum_{i} \log P\left(u_{i} \mid u_{i-k}, \ldots, u_{i-1} ; \Theta\right)$$
 其中，k 是文本窗尺寸，条件概率 P 采用参数为 $\Theta$ 的神经网络建模。这些参数用SGD训练[15].
 在我们的实验中，我们使用多层 Transformer decoder[34]作为语言模型，这是Transformer的变体[62]。该模型在输入上下文tokens上应用一个多头自注意操作(multi-headed self-attention operation)，随后是位置前馈层(position-wise feedforward layers)，以在目标tokens上生成一个输出分布:
-&&\Theta h_{0}=U W_{e}+W_{p}&&
-&&h_{l}=\text { transformer_block }\left(h_{l-1}\right) \forall i \in[1, n]&&
-&&P(u)=\operatorname{softmax}\left(h_{n} W_{e}^{T}\right)&&
+$$\Theta h_{0}=U W_{e}+W_{p}$$
+$$h_{l}=\text { transformer_block }\left(h_{l-1}\right) \forall i \in[1, n]$$
+$$P(u)=\operatorname{softmax}\left(h_{n} W_{e}^{T}\right)$$
                    
