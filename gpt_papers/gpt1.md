@@ -27,18 +27,19 @@ NLP的半监督学习。 我们的工作大体上属于自然语言半监督学�
 **辅助训练目标**
 增加辅助的无监督训练目标是半监督学习的一种替代形式。collobert和weston的早期工作[10]使用了各种各样的辅助NLP任务，如POS标记、分块、命名实体识别和语言建模，以改进语义角色标记。最近，REI[50]在目标任务目标中添加了一个辅助语言建模目标，并演示了序列标记任务的性能的提升。我们的实验也使用了一个辅助目标，但正如我们所展示的，无监督的预训练已经学习了与目标任务相关的几个语言方面。 增加辅助的无监督训练目标是半监督学习的一种替代形式。collobert和weston的早期工作[10]使用了各种各样的辅助NLP任务，如POS标记、分块、命名实体识别和语言建模，以改进语义角色标记。最近，REI[50]在目标任务目标中添加了一个辅助语言建模目标，并演示了序列标记任务的性能的提升。我们的实验也使用了一个辅助目标，但正如我们所展示的，无监督的预训练已经学习了与目标任务相关的几个语言方面。
 
-## 3. 架构
+## 3. Framework
 我们的训练过程分为两个阶段。第一阶段是在大语料库上学习大容量语言模型。接下来是一个微调阶段，在这个阶段中，我们将使模型适应带有标签数据的特定任务。
 
-### 3.1 无监督预训练
+### 3.1 Unsupervised pre-training
 给定无监督tokens集合 $\mathcal{U}=\left\lbrace u_{1}, \ldots, u_{n}\right\rbrace$ , 我们使用标准语言模型目标（language modeling objective）来最大化以下似然函数：<br>
-                    $$L_{1}(\mathcal{U})=\sum_{i} \log P\left(u_{i} \mid u_{i-k}, \ldots, u_{i-1} ; \Theta\right)$$
+                    $$L_{1}(\mathcal{U})=\sum_{i} \log P\left(u_{i} \mid u_{i-k}, \ldots, u_{i-1} ; \Theta\right)$$    (1)
 其中，k 是文本窗尺寸，条件概率 P 采用参数为 $\Theta$ 的神经网络建模。这些参数用SGD训练[15].
 在我们的实验中，我们使用多层 Transformer decoder[34]作为语言模型，这是Transformer的变体[62]。该模型在输入上下文tokens上应用一个多头自注意操作(multi-headed self-attention operation)，随后是位置前馈层(position-wise feedforward layers)，以在目标tokens上生成一个输出分布:
-$$\Theta h_{0}=U W_{e}+W_{p}$$
-$$h_{l}=transformer\_block\left(h_{l-1}\right) \forall i \in[1{} , n]$$
+$$\Theta h_{0}=U W_{e}+W_{p}$$    
+$$h_{l}=transformer\_block\left(h_{l-1}\right) \forall i \in[1{} , n]$$    (2)
 $$P(u)=softmax\left(h_{n} W_{e}^{T}\right)$$
 
 其中 $\mathcal{U}=\left\lbrace u_{-k}, \ldots, u_{-1}\right\rbrace$ 是tokens的文本向量，n是网络层数， $W_{e}$ 是token嵌入矩阵(embedding matrix), $W_{p}$ 是位置嵌入矩阵。
 
-                   
+### 3.2 Supervised fine-tuning
+在用等式1中的目标对模型进行训练后，我们针对被监督目标任务调整这些参数。
