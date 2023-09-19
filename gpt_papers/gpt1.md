@@ -39,6 +39,4 @@ $$\Theta h_{0}=U W_{e}+W_{p}$$
 $$h_{l}=transformer\_block\left(h_{l-1}\right) \forall i \in[1{} , n]$$
 $$P(u)=softmax\left(h_{n} W_{e}^{T}\right)$$
 其中，$\mathcal{U}=\left\lbrace u_{-k}, \ldots, u_{-1}\right\rbrace$是tokens的文本向量，n是网络层数，$W_{e}$是token嵌入矩阵（embedding matrix），$W_{p}$是位置嵌入矩阵.
-
-
                    
