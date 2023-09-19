@@ -31,7 +31,7 @@ NLP的半监督学习。 我们的工作大体上属于自然语言半监督学�
 我们的训练过程分为两个阶段。第一阶段是在大语料库上学习大容量语言模型。接下来是一个微调阶段，在这个阶段中，我们将使模型适应带有标签数据的特定任务。
 
 ### 3.1 无监督预训练
-给定无监督tokens集合 $\mathcal{U}=\left\{u_{1}, \ldots, u_{n}\right\}$ , 我们使用标准语言模型目标（language modeling objective）来最大化以下似然函数：<br>
+给定无监督tokens集合 $\mathcal{U}=\left\lbrace{u_{1}, \ldots, u_{n}\right\lbrace}$ , 我们使用标准语言模型目标（language modeling objective）来最大化以下似然函数：<br>
                     $$L_{1}(\mathcal{U})=\sum_{i} \log P\left(u_{i} \mid u_{i-k}, \ldots, u_{i-1} ; \Theta\right)$$
                     $$\mathcal{U}=\left\{u_{1}, \ldots, u_{n}\right\}$$
                    
