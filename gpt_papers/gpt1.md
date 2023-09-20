@@ -17,7 +17,7 @@
 	autoSave=true
 	/vscode-markdown-toc-config -->
 <!-- /vscode-markdown-toc -->
-<!-- TOC -->
+
 # 通过生成式预训练提高语言理解能力
 
 ##  <a name='-1'></a>0 摘要
