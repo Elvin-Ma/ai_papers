@@ -62,7 +62,7 @@ $$P(u)=softmax\left(h_{n} W_{e}^{T}\right)$$
 其中 $\mathcal{U}=\left\lbrace u_{-k}, \ldots, u_{-1}\right\rbrace$ 是tokens的文本向量，n是网络层数， $W_{e}$ 是token嵌入矩阵(embedding matrix), $W_{p}$ 是位置嵌入矩阵。
 
 ###  <a name='Supervisedfine-tuning'></a>3.2 Supervised fine-tuning
-在用等式1中的目标对模型进行训练后，我们针对被监督目标任务调整这些参数。我们假设一个带标签的数据集C \mathcal{C}C，其中每个实例由一系列输入标记 $x^{1}, \ldots, x^{m}$ 组成，这里面还包含一个标签y。这些输入通过我们预先训练的模型来获得最终transformer block的激活 $h_{l}^{m}$ , 然后将其输入一个附加的线性输出层, 参数 $W_{y}$ 预测y:
+在用等式1中的目标对模型进行训练后，我们针对被监督目标任务调整这些参数。我们假设一个带标签的数据集C，其中每个实例由一系列输入标记 $x^{1}, \ldots, x^{m}$ 组成，这里面还包含一个标签y。这些输入通过我们预先训练的模型来获得最终transformer block的激活 $h_{l}^{m}$ , 然后将其输入一个附加的线性输出层, 参数 $W_{y}$ 预测y:
 $$P\left(y \mid x^{1}, \ldots x^{m}\right)=softmax\left(h_{l}^{m} W_{y}\right)\ldots\ldots(3)$$
 
 它使我们去最大化如下函数：
