@@ -85,7 +85,7 @@ $$L_{3}(\mathcal{C})=L_{2}(\mathcal{C})+\lambda * L_{1}(\mathcal{C})\ldots\ldots
  $h^{m}_{l}$ ,在送入线性输出层之前按元素宽度（element-wise）相加。
 
 **问答和常识性推理**
-我们得到一个上下文文档Z、一个问题Q和一组可能的答案 $\left\lbrace a_{k} \right\rbrace$ ,我们将文档上下文和问题与每个可能的答案连接起来，在两者之间添加一个分隔符标记来获取 $\left[z ; q ; \$ ; a_{k}\right]$ 这些序列中的每一个都是用我们的模型独立处理的，然后通过一个SoftMax层进行规范化，以在可能的答案上产生一个输出分布。
+我们得到一个上下文文档Z、一个问题Q和一组可能的答案 $\left\lbrace a_{k} \right\rbrace$ ,我们将文档上下文和问题与每个可能的答案连接起来，在两者之间添加一个分隔符标记来获取 $[z; q; \$; a_{k}]$ 这些序列中的每一个都是用我们的模型独立处理的，然后通过一个SoftMax层进行规范化，以在可能的答案上产生一个输出分布。
 
 ##  <a name='Experiments'></a>4 Experiments
 
