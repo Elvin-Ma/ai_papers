@@ -62,7 +62,8 @@ $$\mathbf{S}=\mathbf{Q K}^{\top} \in \mathbb{R}^{N \times N}, \quad \mathbf{P}=s
 **切片**
 我们按块计算注意力。由于 softmax 将 K 的列进行耦合，因此 $m(x):=\max _{i} x_{i},$ 我们使用缩放的方法对大型 softmax 进行分解 [51, 60, 66]。为了数值稳定性，向量 $𝑥∈{R^B}$ 的 softmax 计算如下：<br>
 
-$$m(x):=max(i) \quad x_{i}, \quad  f(x):=\left[\begin{array}{lll} e^{x_{1}-m(x)} & \ldots & e^{x_{B}-m(x)} \end{array}\right], \quad \ell(x):=\sum_{i} f(x)_{i}, \quad softmax(x):=\frac{f(x)}{\ell(x)}$$<br>
+$$m(x):=max(i) \quad x_{i}, \quad  f(x):=\left[\begin{array}{lll} e^{x_{1}-m(x)} & \ldots & e^{x_{B}-m(x)} \end{array}\right], \quad \ell(x):=\sum_{i} f(x)_{i}, \quad softmax(x):=\frac{f(x)}{\ell(x)}$$
+
 *注释：在数学中，":=" 是赋值符号，表示将右侧的值赋给左侧的变量或表达式。它常用于编程语言中表示变量的初始化或赋值操作*
 
 
