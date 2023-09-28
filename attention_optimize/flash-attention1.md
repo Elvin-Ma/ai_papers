@@ -45,4 +45,25 @@ GPU具有大量的线程来执行操作（called a kernel）。每个内核从HB
 
 ## 2.2 Standard Attention Implementation
 给定输入序列 $Q、K、V ∈ R^{N×d}$ ，其中 N 是序列长度，d 是头维度（head dimension），我们想要计算注意力输出 $O ∈ R^{N×d}$。
-$$\mathbf{S}=\mathbf{Q K}^{\top} \in \mathbb{R}^{N \times N}, \quad \mathbf{P}=softmax(\mathbf{S}) \in \mathbb{R}^{N \times N}, \quad \mathbf{O}=\mathbf{P V} \in \mathbb{R}^{N \times d}$$
+$$\mathbf{S}=\mathbf{Q K}^{\top} \in \mathbb{R}^{N \times N}, \quad \mathbf{P}=softmax(\mathbf{S}) \in \mathbb{R}^{N \times N}, \quad \mathbf{O}=\mathbf{P V} \in \mathbb{R}^{N \times d},$$
+这里，softmax 按行(row-wise)来进行。
+标准的注意力实现将矩阵 S 和 P 实例化到 HBM 中，这需要 O(N^2) 的内存。通常情况下，N>>d（例如，对于GPT2，N=1024，d=64）。我们在算法0中描述了标准的注意力实现。由于一些或大部分操作是内存密集型的（例如softmax），大量的内存访问会导致较慢的实际执行时间<br>
+这个问题在应用于注意力矩阵的其他逐元素操作时会变得更加严重，例如应用于 S 的掩码操作或应用于 P 的dropout操作。因此，已经有很多尝试将多个逐元素操作融合在一起，例如将掩码操作与softmax操作融合在一起[77]。<br>
+在第3.2节中，我们将展示标准的注意力实现在序列长度 N 方面进行 HBM 访问的二次方增长。我们还将比较标准注意力和我们的方法（FlashAttention）的FLOPs数量和HBM访问数量。<br>
+![algorithm](./images/flash_attention1_algorithm.jpg)<br>
+
+# 3 FlashAttention：算法、分析和扩展
+我们展示了如何在减少HBM读写次数的同时计算精确的注意力，而无需存储大型中间矩阵用于反向传播。这产生了一个既内存高效又在实际执行时间上更快的注意力算法。我们对其IO复杂度进行了分析，表明与标准注意力相比，我们的方法需要更少的HBM访问次数。我们进一步展示了FlashAttention可以作为一个有用的基本原语，通过将其扩展为处理块稀疏注意力。<br>
+为了便于阐述，我们在这里重点关注前向传播过程；附录B中包含了反向传播的详细信息。<br>
+
+## 3.1 一种具有切片和重计算的高效注意力算法
+给定输入的 $Q、K、V ∈ R^{N×d}$ 存储在 HBM 中，我们的目标是计算注意力输出 $O ∈ R^{N×d}$ 并将其写入 HBM。我们的目标是减少 HBM 访问量（降低到次二次方级别的水平）。<br>
+我们应用了两种已经建立的技术（切片和重计算）来克服在次二次方级别的HBM访问中计算精确注意力的技术挑战。我们在算法1中描述了这一过程。主要思想是将输入的 Q、K、V 划分为块，从较慢的HBM加载到较快的SRAM中，然后相对于这些块计算注意力输出。通过在将每个块的输出乘以正确的归一化因子之前进行缩放并将它们相加，我们最终得到了正确的结果。<br>
+**切片**
+我们按块计算注意力。由于 softmax 将 K 的列进行耦合，因此我们使用缩放的方法对大型 softmax 进行分解 [51, 60, 66]。为了数值稳定性，向量 $𝑥∈{R^B}$ 的 softmax 计算如下：
+$$m(x):=\max _{i} \quad x_{i}, \quad f(x):=\left[\begin{array}{lll}
+e^{x_{1}-m(x)} & \ldots & e^{x_{B}-m(x)}
+\end{array}\right], \quad \ell(x):=\sum_{i} f(x)_{i}, \quad softmax(x):=\frac{f(x)}{\ell(x)}$$
+
+
+
