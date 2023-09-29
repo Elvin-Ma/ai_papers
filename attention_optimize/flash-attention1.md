@@ -117,8 +117,50 @@ $$S = QK^{T} \in R^{N \times N}, \quad P=softmax(S \odot 1_{\tilde{M}}) \in R^{N
     我们还分析了块稀疏FlashAttention的输入输出复杂度。
 **命题4**：设 𝑁 为序列长度，𝑑 为头维度，𝑀 为 SRAM 的大小，其中 𝑑 ≤ 𝑀 ≤ 𝑁𝑑。块稀疏FlashAttention（算法5）需要 $Θ(𝑁𝑑 + 𝑁^{2}𝑑^{2}𝑀^{-1}𝑠)$ 次 HBM 访问，其中 𝑠 是块稀疏掩码中非零块的比例。
     我们可以看到，应用块稀疏性直接通过稀疏性改进了IO复杂性中较大的项。对于较大的序列长度𝑁，𝑠通常设置为 
- $𝑁^(-1/2)$ [11]或 $𝑁^(-1)log𝑁$ [3, 17, 92]，导致 $\Theta(N \sqrt{N})$ 或 $\Theta(N \log N)$ 的IO复杂性。在后续的实验中，我们使用固定的蝴蝶稀疏模式[17]，已经证明能够近似任意稀疏性[16]。
+ $𝑁^{-1/2}$ [11]或 $𝑁^{-1}log𝑁$ [3, 17, 92]，导致 $\Theta(N \sqrt{N})$ 或 $\Theta(N \log N)$ 的IO复杂性。在后续的实验中，我们使用固定的蝴蝶稀疏模式[17]，已经证明能够近似任意稀疏性[16]。
     在图2（右图）中，我们验证了随着稀疏度的增加，块稀疏FlashAttention的运行时间成比例地改善。在LRA基准测试中，块稀疏FlashAttention实现了2.8倍的加速，在性能上与标准注意力相当（第4节）。
 
+# 4 试验
+我们评估了使用FlashAttention训练Transformer模型的影响。我们验证了关于训练时间和模型准确性的两个观点，并报告了注意力运行时间和内存基准测试结果。
 
+- **训练速度**：FlashAttention在BERT的MLPerf 1.1[58]速度记录上超过了15%，相比于标准Transformer，它比HuggingFace[87]快了最多3倍，比Megatron[77]快了1.8倍。FlashAttention将长范围竞技场long-range arena（LRA）基准测试的速度提升了2.4倍。
+- **质量**：FlashAttention使Transformer能够处理更长的序列，从而提供更高的质量。FlashAttention训练GPT-2的上下文长度为4K，比Megatron训练上下文长度为1K的GPT-2更快，同时达到了更好的困惑度(perplexity)提高了0.7。对于两个长文档分类任务，对更长的序列建模使性能提高了6.4个点。最后，FlashAttention使得Transformer首次在具有挑战性的Path-X任务（序列长度为16K）上实现了优于随机的性能，而块稀疏FlashAttention是我们所知道的第一个在Path-256（序列长度为64K）上能够实现优于随机的序列模型。
+- **注意力基准测试**：我们根据序列长度测量了FlashAttention和块稀疏FlashAttention的运行时间和内存性能。我们确认FlashAttention的内存占用与序列长度呈线性关系，并且在常见的序列长度（最高为2K）上比标准注意力快最多3倍。我们确认块稀疏FlashAttention的运行时间与序列长度呈线性关系，并且比所有现有的近似注意力基准都更快。
 
+附录E中提供了额外的实验细节。
+
+## 4.1 使用FlashAttention加速模型
+**BERT.** FlashAttention提供了我们所知道的最快的单节点BERT训练速度。我们在维基百科上使用FlashAttention训练了一个BERT-large [22]模型。表格1将我们的训练时间与Nvidia的实现进行了比较，该实现在MLPerf 1.1 [58]中创造了训练速度记录。我们的实现比他们快15%。
+![table1](./images/flash_attention1_table1.jpg) <br>
+**GPT-2.** FlashAttention在大型OpenWebtext数据集[32]上训练的GPT-2 [67]比广泛使用的HuggingFace [87]和Megatron-LM [77]实现具有更快的训练时间。表格2显示与HuggingFace相比，最多可实现3倍的端到端加速，与Megatron-LM相比可实现1.7倍的加速。FlashAttention实现了与其他两种实现相同的困惑度，因为我们没有改变模型定义。
+附录E中包含了训练过程中验证困惑度的图表，确认FlashAttention与基准模型具有相同的数值稳定性，并产生相同的训练/验证曲线。
+![table2](./images/flash_attention1_table2.jpg)
+
+长范围竞技场（Long-range Arena）。我们在长范围竞技场（LRA [80]）基准测试中比较了普通Transformer（使用标准实现或FlashAttention）的性能。我们测量了所有模型的准确性、吞吐量和训练时间。每个任务的序列长度在1024到4096之间不同。我们遵循Tay等人[80]和Xiong等人[90]的实现和实验设置。
+表格3显示，与标准注意力相比，FlashAttention的速度提高了最多2.4倍。块稀疏FlashAttention比我们测试过的所有近似注意力方法都更快。<br>
+![table3](./images/flash_attention1_table4.jpg)
+
+## 4.2 Better Models with Longer Sequences
+**使用长上下文进行语言建模**.FlashAttention的运行时间和内存效率使我们能够将GPT-2的上下文长度增加4倍，同时仍然比来自Megatron-LM的优化实现更快。表格4显示，使用FlashAttention和上下文长度为4K的GPT-2仍然比使用上下文长度为1K的Megatron的GPT-2快30%，同时实现了更好的0.7困惑度
+![table4](./images/flash_attention1_table4.jpg)
+
+**长文档分类**。使用FlashAttention训练具有更长序列的Transformer可以提高MIMIC-III [47]和ECtHR [6, 7]数据集上的性能。MIMIC-III包含重症监护病房患者出院摘要，每个摘要都带有多个标签。ECtHR包含来自欧洲人权法院的法律案件，每个案件都与据称违反的《人权公约》的条款相关联。这两个数据集都包含非常长的文本文档；MIMIC中的平均标记数为2,395个，最长的文档包含14,562个标记，而ECtHR中的平均标记数和最长标记数分别为2,197和49,392个。我们评估了将预训练的RoBERTa模型 [56]的序列长度增加后的性能提升（我们像Beltagy等人[3]那样重复位置嵌入）。<br>
+![figure3](./images/flash_attention1_figure3.jpg)
+
+表格5显示，在MIMIC数据集上，序列长度16K的性能比长度512高出4.3个点，在ECtHR数据集上，序列长度8K的性能比长度512高出8.5个点。这些差异可能是由于微小的分布变化引起的：MIMIC-III包含专门的医学文本，因此对文档长度的分布变化可能更敏感，而ECtHR包含一般语言。
+![table5](./images/flash_attention1_table5.jpg)<br>
+Path-X和Path-256。Path-X和Path-256是长范围竞技场基准测试中的挑战性任务，旨在测试长上下文。该任务是对黑白128×128（或256×256）图像中的两个点是否存在连接路径进行分类，图像以每个像素一个的方式输入Transformer模型。在先前的工作中，所有Transformer模型要么内存耗尽，要么只能达到随机性能[80]。人们一直在寻找能够建模这种长上下文的替代架构[37]。我们在这里呈现了Transformer模型能够解决Path-X和Path-256的首个结果（表格6）。我们在Path-64上预训练了一个Transformer模型，然后通过空间插值来将位置嵌入传递到Path-X上。FlashAttention在Path-X上达到了61.4的准确率。此外，块稀疏FlashAttention使得Transformer模型能够扩展到序列长度为64K，Path-256上达到了63.1的准确率。
+
+## 4.3 Benchmarking Attention
+我们变化序列长度，并在配备40 GB HBM的一块A100 GPU上使用FlashAttention和块稀疏FlashAttention与各种注意力基准进行运行时间和内存使用的测量，包括使用dropout和填充掩码。我们与精确注意力、近似注意力和稀疏注意力的参考实现进行比较。在正文中，我们报告了一部分基准测试结果；附录E中包含更多的基准测试和详细信息。<br>
+**运行时间**。图3（左侧）报告了FlashAttention和块稀疏FlashAttention的前向+后向传递的运行时间（以毫秒为单位），与精确、近似和稀疏注意力的基准测试进行了比较（具体数字见附录E）。运行时间随着序列长度的增加呈二次增长，但是FlashAttention的运行速度比精确注意力的基准测试快得多，比PyTorch实现快3倍。许多近似/稀疏注意力机制的运行时间与序列长度成线性增长，但由于内存访问较少，FlashAttention在短序列上仍然比近似和稀疏注意力更快。近似注意力的运行时间在序列长度在512到1024之间开始与FlashAttention相交。另一方面，块稀疏FlashAttention在所有的序列长度上都比我们所知的所有精确、稀疏和近似注意力的实现都更快
+**内存占用**。图3（右侧）显示了FlashAttention和块稀疏FlashAttention与各种精确、近似和稀疏注意力基准测试相比的内存占用。FlashAttention和块稀疏FlashAttention具有相同的内存占用，随着序列长度的增加呈线性增长。FlashAttention比精确注意力基准测试更节省内存，最多节省20倍，并且比近似注意力基准测试更节省内存。除了Linformer之外，所有其他算法在A100 GPU上在64K之前就会耗尽内存，而FlashAttention的效率仍然是Linformer的2倍。
+
+# 5 限制和未来方向（limitations and futrue directions）
+我们讨论了我们方法的局限性和未来的方向。附录A中提供了相关工作的信息。
+
+**编译为CUDA**。我们目前构建IO感知的注意力实现的方法需要为每个新的注意力实现编写一个新的CUDA内核。这要求使用比PyTorch更低级别的语言编写注意力算法，并需要大量的工程工作。实现可能也无法在不同的GPU架构之间进行转移。这些限制表明需要一种方法，支持使用高级语言（如PyTorch）编写注意力算法，并将其编译为IO感知的CUDA实现，类似于图像处理中的Halide等工作[70]。
+
+**IO感知的深度学习**。我们认为IO感知方法可以扩展到注意力之外。注意力是Transformer中内存密集型的计算，但是深度网络中的每一层都会触及GPU HBM。我们希望我们的工作能够激发对其他模块进行IO感知实现的工作。我们在附录D中讨论了这些潜在的扩展。
+
+**多GPU的IO感知方法**。我们对注意力的IO感知实现在单个GPU上是最优的。然而，注意力计算可能可以在多个GPU上并行化[72]。使用多个GPU会增加IO分析的额外层次，需要考虑GPU之间的数据传输。我们希望我们的工作能够激发未来在这个方向上的研究工作。
