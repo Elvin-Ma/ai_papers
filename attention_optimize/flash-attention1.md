@@ -112,7 +112,7 @@ Q K V 三个矩阵的形状均为[N x d], 芯片上 SRAM 尺寸为大小为 M �
 我们将FlashAttention扩展为近似注意力的块稀疏FlashAttention。其输入输出复杂度相对于FlashAttention来说，与稀疏度成比例的因子更小.<br>
 给定输入Q、K、 $V \in R^{𝑁𝑑}$ 和掩码矩阵 $M \in \left\lbrace0, 1\right\rbrace^{𝑁×𝑁}$ ,我们希望计算：
 $$S = QK^{T} \in R^{N \times N}, \quad P=softmax(S \odot 1_{\tilde{M}}) \in R^{N \times N}, \quad O = PV \in R^{N \times d},$$
-![text](./images/flash_attention1_text1.jpg)
+![figure](./images/flash_attention1_text1.jpg)
 
 
 
