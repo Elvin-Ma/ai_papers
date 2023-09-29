@@ -12,13 +12,13 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Transformer 模型[82] 已经成为自然语言处理和图像分类等应用中最常用的架构。Transformer 模型变得更大[5]、更深[83]，但要为它们提供更长的上下文仍然很困难[80]，因为它们核心的自注意力模块的时间和内存复杂度随序列长度呈二次增长。一个重要的问题是，将注意力机制变得更快速和内存更高效是否可以帮助 Transformer 模型解决长序列的运行时间和内存挑战。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;许多近似注意力方法旨在减少注意力计算和内存需求。这些方法包括稀疏近似[51, 74]、低秩近似[12, 50, 84]以及它们的组合[3, 9, 92]。尽管这些方法将计算需求降低为线性或接近线性，但其中许多方法并没有在与标准注意力相比的挂钟速度上显示出加速，并且没有得到广泛采用。一个主要原因是它们侧重于降低浮点运算量（与挂钟速度可能不相关），并且往往忽视了内存访问（IO）带来的开销。<br>
 ![figure1](./images/flash_attention1_figure1.jpg)<br>
-<center>图1：左图：FlashAttention使用切片技术，防止在相对较慢的GPU高带宽存储器（HBM）上实例化大型的𝑁×𝑁注意力矩阵（虚线框）。在外循环（红色箭头）中，FlashAttention通过K和V矩阵的块循环，并将它们加载到快速的片上SRAM上。在每个块中，FlashAttention通过Q矩阵的块循环（蓝色箭头），将它们加载到SRAM，并将注意力计算的输出写回HBM。右图：相对于GPT-2在PyTorch实现的注意力机制，FlashAttention获得了加速。FlashAttention不需要将大型的𝑁×𝑁注意力矩阵读取和写入HBM，从而在注意力计算中获得了7.6倍的加速。</center>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp图1：左图：FlashAttention使用切片技术，防止在相对较慢的GPU高带宽存储器（HBM）上实例化大型的𝑁×𝑁注意力矩阵（虚线框）。在外循环（红色箭头）中，FlashAttention通过K和V矩阵的块循环，并将它们加载到快速的片上SRAM上。在每个块中，FlashAttention通过Q矩阵的块循环（蓝色箭头），将它们加载到SRAM，并将注意力计算的输出写回HBM。右图：相对于GPT-2在PyTorch实现的注意力机制，FlashAttention获得了加速。FlashAttention不需要将大型的𝑁×𝑁注意力矩阵读取和写入HBM，从而在注意力计算中获得了7.6倍的加速.
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本论文中，我们认为一个没被注意到的原则是使注意力算法具有IO感知性[1]，即仔细考虑对不同级别的快速和慢速存储器(memory)进行读写操作（例如，在快速GPU 芯片上SRAM和相对较慢的GPU高带宽存储器之间，如图1所示，左侧）。在现代GPU上，计算速度已经超过了内存速度[61, 62, 63]，而Transformer中的大多数操作都受到内存访问的瓶颈[43]。在读取和写入数据占据了运行时间的很大部分的内存受限操作中(IO密集型operator中)，IO感知算法至关重要，例如数据库连接[71]、图像处理[70]、数值线性代数[4]等等[40, 85]。然而，诸如PyTorch和Tensorflow等深度学习的常见Python接口并不允许对内存访问进行细粒度的控制。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们提出了一种名为FlashAttention的新型注意力算法，它可以在较少的内存访问次数下计算精确的注意力。我们的主要目标是避免将注意力矩阵读取和写入到HBM。为实现这一目标，我们采用了两种成熟的技术来解决这些挑战。(i) 我们重构了注意力计算过程，将输入分割成块，并对输入块进行多次处理，从而逐步执行softmax归一化操作（也称为切片）。(ii) 我们在前向传播中存储了softmax归一化因子，以便在后向传播中快速重新计算注意力，这比从HBM中读取中间注意力矩阵的标准方法更快。我们使用CUDA实现了FlashAttention，以实现对内存访问的细粒度控制，并将所有注意力操作融合到一个GPU内核中。尽管由于重新计算而增加了浮点运算量，但由于大大减少了对HBM的访问量，我们的算法比标准注意力运行得更快（如图1右图所示，GPT-2上最高可达7.6倍），并且使用的内存量与序列长度呈线性关系。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们对FlashAttention的IO复杂性进行了分析[1]，证明它需要 $𝑂(𝑁^{2}𝑑^{2}𝑀^{−1})次HBM访问，其中𝑑是头部维度，𝑀是SRAM的大小，而标准注意力需要𝑂(𝑁^{𝑑} + 𝑁^{2})次访问。对于典型的𝑑和𝑀值，与标准注意力相比，FlashAttention需要较少的HBM访问次数（如图2所示，最多减少了9倍）。此外，我们还提供了一个下界，表明没有任何精确的注意力算法可以在所有SRAM大小上渐近地改善HBM访问次数的数量。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们还展示了FlashAttention作为实现近似注意力算法潜力的有用基元的能力，克服了它们在内存访问开销方面的问题。作为概念验证，我们实现了块稀疏的FlashAttention，这是一种稀疏(sparse)的注意力算法，比FlashAttention本身快2-4倍，可以扩展到长度为64k的序列。我们证明了块稀疏的FlashAttention具有比FlashAttention更好的IO复杂性，其比例与稀疏比例成正比。在第5节中，我们讨论了对其他操作(operations)的进一步扩展（多GPU上的注意力，核回归，块稀疏矩阵乘法）。我们将FlashAttention开源，以使构建在这个基元之上变得更加容易。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;我们通过实证验证了FlashAttention在模型训练中的加速效果，并通过对更长上下文进行建模来提高模型质量。我们还对FlashAttention和块稀疏的FlashAttention与之前的注意力实现进行了运行时和内存占用的基准测试。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们通过实证验证了FlashAttention在模型训练中的加速效果，并通过对更长上下文进行建模来提高模型质量。我们还对FlashAttention和块稀疏的FlashAttention与之前的注意力实现进行了运行时和内存占用的基准测试。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**更快的模型训练**
 FlashAttention在实际时间上加快了Transformer模型的训练速度。我们在BERT-large（序列长度512）的训练速度比MLPerf 1.1 [58]的训练速度记录快15%，比HuggingFace [87]和Megatron-LM [77]的基准实现快3倍，以及在长距离竞技场（序列长度1K-4K）中比基准(baseline)实现快2.4倍。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**更高质量的模型**
@@ -39,7 +39,7 @@ GPU具有大量的线程来执行操作（called a kernel）。每个内核从HB
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**性能特征**.
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;根据计算和内存访问之间的平衡，操作可以被分类为计算密集型或内存密集型。这通常通过算术强度（arithmetic intensity）[85]来衡量，它表示每字节内存访问的算术操作数量。<br>
 1.计算密集型（Compute-bound）：操作所需的时间由其中的算术操作数量决定，而访问HBM的时间要小得多。典型的例子包括具有大内部维度的矩阵乘法以及具有大量通道的卷积操作。<br>
-2.内存密集型（Memory-bound）：操作所需的时间由内存访问的次数决定，而计算时间要小得多。这类操作的例子包括大多数其他操作，如逐元素操作（例如激活函数、dropout）和归约操作（例如求和、softmax、批归一化、层归一化）等。
+2.内存密集型（Memory-bound）：操作所需的时间由内存访问的次数决定，而计算时间要小得多。这类操作的例子包括大多数其他操作，如逐元素操作（例如激活函数、dropout）和归约操作（例如求和、softmax、批归一化、层归一化）等。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**内核融合(Kernel fusion)**
 加速内存密集型操作最常见的方法是进行内核融合：如果对同一输入应用了多个操作，可以从HBM中一次加载输入，而不是为每个操作多次加载。编译器可以自动融合许多逐元素操作[53, 65, 75]。然而，在模型训练的上下文中，中间值仍然需要被写入HBM以便在反向传播过程中保存，这降低了朴素内核融合的有效性。<br>
 
@@ -96,7 +96,7 @@ Q K V 三个矩阵的形状均为[N x d], 芯片上 SRAM 尺寸为大小为 M �
 
 ## 3.2 分析：FlashAttention 的IO 复杂度
 ![figure2](./images/flash_attention1_figure2.jpg)<br>
-<center>图2：左图：在A100 GPU上，GPT-2中型模型（序列长度1024，头维度64，16个头，批大小64）的标准注意力和FlashAttention的前向+后向运行时间。HBM访问是影响运行时间的主要因素。中间图：在A100 GPU上，FlashAttention的前向运行时间（序列长度1024，头维度64，16个头，批大小64）。较少的HBM访问次数导致更快的运行时间，直到某个点为止。右图：对于序列长度为4K的块稀疏FlashAttention，运行时间比FlashAttention快，其比例与稀疏度成比例。</center>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;图2：左图：在A100 GPU上，GPT-2中型模型（序列长度1024，头维度64，16个头，批大小64）的标准注意力和FlashAttention的前向+后向运行时间。HBM访问是影响运行时间的主要因素。中间图：在A100 GPU上，FlashAttention的前向运行时间（序列长度1024，头维度64，16个头，批大小64）。较少的HBM访问次数导致更快的运行时间，直到某个点为止。右图：对于序列长度为4K的块稀疏FlashAttention，运行时间比FlashAttention快，其比例与稀疏度成比例。
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们分析了FlashAttention的IO复杂度，展示了与标准注意力相比HBM访问次数的显著减少。我们还提供了一个下界，证明没有任何精确的注意力算法能够在所有SRAM大小上渐近地改善HBM访问次数。证明详见附录C。<br>
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**定理2**: 设 𝑁 为序列长度，𝑑 为头维度，𝑀 为 SRAM 的大小，其中 𝑑 ≤ 𝑀 ≤ 𝑁𝑑。标准注意力（算法0）需要 
@@ -115,7 +115,7 @@ $$S = QK^{T} \in R^{N \times N}, \quad P=softmax(S \odot 1_{\tilde{M}}) \in R^{N
 ![figure](./images/flash_attention1_text1.jpg)<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;给定预定义的块稀疏掩码矩阵 $M \in \left\lbrace0, 1\right\rbrace^(𝑁/𝐵𝑟)×(𝑁/𝐵𝑐)$ ，我们可以轻松地调整算法1，仅计算注意力矩阵的非零块。该算法与算法1相同，只是我们跳过零块。我们在附录B中复制了算法描述，具体见算法5。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们还分析了块稀疏FlashAttention的输入输出复杂度。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**命题4**：设 𝑁 为序列长度，𝑑 为头维度，𝑀 为 SRAM 的大小，其中 𝑑 ≤ 𝑀 ≤ 𝑁𝑑。块稀疏FlashAttention（算法5）需要 $Θ(𝑁𝑑 + 𝑁^{2}𝑑^{2}𝑀^{-1}𝑠)$ 次 HBM 访问，其中 𝑠 是块稀疏掩码中非零块的比例.我们可以看到，应用块稀疏性直接通过稀疏性改进了IO复杂性中较大的项。对于较大的序列长度𝑁，𝑠通常设置为 $𝑁^{-1/2}$ [11]或 $𝑁^{-1}log𝑁$ [3, 17, 92]，导致 $\Theta(N \sqrt{N})$ 或 $\Theta(N \log N)$ 的IO复杂性。在后续的实验中，我们使用固定的蝴蝶稀疏模式[17]，已经证明能够近似任意稀疏性[16]。在图2（右图）中，我们验证了随着稀疏度的增加，块稀疏FlashAttention的运行时间成比例地改善。在LRA基准测试中，块稀疏FlashAttention实现了2.8倍的加速，在性能上与标准注意力相当（第4节）。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**命题4**：设 𝑁 为序列长度，𝑑 为头维度，𝑀 为 SRAM 的大小，其中 𝑑 ≤ 𝑀 ≤ 𝑁𝑑。块稀疏FlashAttention（算法5）需要 $Θ(𝑁𝑑 + 𝑁^{2}𝑑^{2}𝑀^{-1}𝑠)$ 次 HBM 访问，其中 𝑠 是块稀疏掩码中非零块的比例.我们可以看到，应用块稀疏性直接通过稀疏性改进了IO复杂性中较大的项。对于较大的序列长度𝑁，𝑠通常设置为 $𝑁^{-1/2}$ [11]或 $𝑁^{-1}log𝑁$ [3, 17, 92]，导致 $\Theta(N \sqrt{N})$ 或 $\Theta(N \log N)$ 的IO复杂性。在后续的实验中，我们使用固定的蝴蝶稀疏模式[17]，已经证明能够近似任意稀疏性[16]。在图2（右图）中，我们验证了随着稀疏度的增加，块稀疏FlashAttention的运行时间成比例地改善。在LRA基准测试中，块稀疏FlashAttention实现了2.8倍的加速，在性能上与标准注意力相当（第4节）。<br>
 
 # 4 试验
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们评估了使用FlashAttention训练Transformer模型的影响。我们验证了关于训练时间和模型准确性的两个观点，并报告了注意力运行时间和内存基准测试结果。
