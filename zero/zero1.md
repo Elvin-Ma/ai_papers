@@ -14,6 +14,9 @@
 2. 添加梯度分区( $P_{os+g}$ )：内存减少8倍，与DP相同的通信量；
 3. 添加参数分区( $P_{os+g+p}$ )：内存减少与DP的数量 $N_{d}$ 线性相关。例如，将其分割成64个GPU( $N_{d} = 64$ )，将使内存减少64倍。通信量略有增加，约为50%。<br>
 *注释：os: optimizer state; g: gradient; p: parameter*
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-DP消除了内存冗余，并使整个集群的完整聚合内存容量可用。在启用了所有三个阶段的情况下，ZeRO可以在仅使用1024个NVIDIA GPU上训练一万亿参数的模型。带有Adam [6]等优化器的一万亿参数模型在16位精度下需要大约16太字节（TB）的内存来存储优化器状态、梯度和参数。16TB除以1024等于16GB，这在GPU上是一个合理的范围内（例如，具有32GB的设备内存）。<br>
+![figure1](./images/zero1_figure1.jpg)
+
 
 
 
