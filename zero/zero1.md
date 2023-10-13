@@ -138,4 +138,23 @@ ZeRO-DP基于三个关键洞见：
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当有足够的可用内存时，有限的内存碎片化通常不是一个问题。但是对于在有限内存下运行的大型模型训练，内存碎片化会导致两个问题：(i) 即使有足够的可用内存，由于缺乏连续内存而导致OOM；(ii) 内存分配器花费大量时间搜索连续的内存块来满足内存请求，导致效率低下。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO通过即时进行内存碎片整理(memory defragmentation)来解决这个问题，它预先分配连续的内存块用于激活检查点和梯度，并在产生时将它们复制到预分配的内存中。 $M_{D}$ 不仅使ZeRO能够训练更大的模型和更大的批量大小，而且在有限内存下训练时提高了效率。<br>
 
+# 7 ZeRO-DP通信分析
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于ZeRO通过去除内存冗余(memory redundancy)来增加模型大小，因此自然而然地会问我们是否在以通信量(communication volume)作为内存效率的交换。换句话说，与基线(baseline) DP方法相比，ZeRO-DP方法的通信量是多少？答案分为两个部分：i）在使用 $P_{os}$ 和 $P_{g}$ 时，ZeRO-DP不会产生额外的通信开销，同时可以实现多达8倍的内存减少；ii）使用 $P_{p}$ 除了 $P_{os}$ 和 $P_{g}$之外，ZeRO-DP最多会产生1.5倍的通信开销，同时将内存占用进一步减少 $N_{d}$ 倍。我们在本节中对此进行分析。首先，我们简要概述标准DP的通信量。<br>
+
+## 7.1 数据并行通信量(ZeRO-DP Communication Volume)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在数据并行训练中，在进行反向传播的最后，所有数据并行进程的梯度将被平均化，然后计算下一步的更新。平均化是通过一个全约减通信集合(all-reduce communication collective)操作来执行的。对于大型模型，全约减通信完全受到通信带宽的限制，因此我们将分析发送到每个数据并行进程以及从每个数据并行进程接收到的总通信量。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;全约减通信(all-reduce communication)的最优实现采用了两步方法，第一步是reduce-scatter操作，它在不同进程上reduce了数据的不同部分。下一步是all-gather操作，每个进程收集了所有进程上的reduce数据。这两个步骤的结果是全约减通信(all-reduce communication)。reduce-scatter和all-gather都使用了流水线(pipelined)方法来实现，导致每个步骤每张卡需要Ψ个元素的总数据移动量（对于具有Ψ个元素的数据）。因此，标准的数据并行方法在每个训练步骤(training step)中产生2Ψ个数据移动。<br>
+*(通信方法参考：https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html)*
+*reduce-scater：每一部分weight 通信了 $N_{d}$ 次, 平均一张卡通信没部分weight 都通信一次*
+*all-gather: 每张卡接受其他卡上的weight，并将自身weight传出去，数据总量正好为Ψ*
+
+# 7.2 ZeRO-DP通信量
+## 7.2.1 使用 $P_{os+g}$ 的通信量
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;使用梯度分区，每个进程只存储用于更新其对应参数分区的梯度部分。因此，ZeRO不需要进行全约减(all-reduce)操作，而是只需要对梯度进行分发(scatter)和约减(reduce)操作，产生Ψ的通信量。在每个进程更新其负责的参数分区后，还需要执行全收集(all-reduce)操作，以从所有数据并行进程收集所有更新后的参数。这也产生了Ψ的通信量。因此，每个训练步骤的总通信量为Ψ + Ψ = 2Ψ，与基线DP完全相同。
+*(注释：先做scatter 和 reducer；再更新参数；之后再做all-reduce --> 这些操作都是更新完梯度之后做的，优化器状态不需要通信)*
+
+## 7.2.2 使用Pos+g+p的通信量
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在参数分区之后，每个数据并行进程只存储其所更新的参数。因此，在前向传播过程中，它需要接收所有其他分区的参数。然而，这可以通过流水线(pipeline)方式来避免内存开销。在计算与特定分区对应的模型部分的前向传播之前，负责该分区的数据并行进程可以将权重广播(broadcast)到所有数据并行进程。一旦完成了该分区的前向传播，参数可以被丢弃。因此，总通信量为  $\frac{Ψ \times N_{d}}{N_{d}} = Ψ$ 。换句话说，我们通过在整个(spreading)前向传播过程中进行该操作来重新安排参数全收集，并在使用后丢弃参数。但请注意，在反向传播中，这个全收集(all-gater)需要按相反的顺序再次进行。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;因此，总通信量是由这些参数全收集(all-gather)以及梯度的约减操作引起的通信量之和。总体通信量因此为3Ψ，相对于基线而言增加了1.5( 3 / 2 = 1.5)倍。梯度和参数分区都利用了这样一个洞察(insight)：并非所有梯度和参数的状态都始终被需要，通过明智地传递状态来优化内存。<br>
+
 
