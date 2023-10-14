@@ -139,7 +139,7 @@ ZeRO-DP基于三个关键洞见：
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO通过即时进行内存碎片整理(memory defragmentation)来解决这个问题，它预先分配连续的内存块用于激活检查点和梯度，并在产生时将它们复制到预分配的内存中。 $M_{D}$ 不仅使ZeRO能够训练更大的模型和更大的批量大小，而且在有限内存下训练时提高了效率。<br>
 
 # 7 ZeRO-DP通信分析
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于ZeRO通过去除内存冗余(memory redundancy)来增加模型大小，因此自然而然地会问我们是否在以通信量(communication volume)作为内存效率的交换。换句话说，与基线(baseline) DP方法相比，ZeRO-DP方法的通信量是多少？答案分为两个部分：i）在使用 $P_{os}$ 和 $P_{g}$ 时，ZeRO-DP不会产生额外的通信开销，同时可以实现多达8倍的内存减少；ii）使用 $P_{p}$ 除了 $P_{os}$ 和 $P_{g}$之外，ZeRO-DP最多会产生1.5倍的通信开销，同时将内存占用进一步减少 $N_{d}$ 倍。我们在本节中对此进行分析。首先，我们简要概述标准DP的通信量。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于ZeRO通过去除内存冗余(memory redundancy)来增加模型大小，因此自然而然地会问我们是否在以通信量(communication volume)作为内存效率的交换。换句话说，与基线(baseline) DP方法相比，ZeRO-DP方法的通信量是多少？答案分为两个部分：i）在使用 $P_{os}$ 和 $P_{g}$ 时，ZeRO-DP不会产生额外的通信开销，同时可以实现多达8倍的内存减少；ii）使用 $P_{p}$ 除了 $P_{os}$ 和 $P_{g}$ 之外，ZeRO-DP最多会产生1.5倍的通信开销，同时将内存占用进一步减少 $N_{d}$ 倍。我们在本节中对此进行分析。首先，我们简要概述标准DP的通信量。<br>
 
 ## 7.1 数据并行通信量(ZeRO-DP Communication Volume)
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在数据并行训练中，在进行反向传播的最后，所有数据并行进程的梯度将被平均化，然后计算下一步的更新。平均化是通过一个全约减通信集合(all-reduce communication collective)操作来执行的。对于大型模型，全约减通信完全受到通信带宽的限制，因此我们将分析发送到每个数据并行进程以及从每个数据并行进程接收到的总通信量。<br>
@@ -179,3 +179,19 @@ ZeRO-DP基于三个关键洞见：
 
 # 10. 实施和评估
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们实施的重点是支持具有约1000亿参数的模型的高效训练，这比当前最大的已发布模型（例如T5-11B [4]）大一个数量级，同时可以在当前硬件上（例如使用1,000个V100 GPUs）在合理的时间范围内进行训练。我们在ZeRO中实施和评估了一部分优化策略——ZeRO-DP中的 $P_{os+g}$ 和ZeRO-R，以实现这一目标。我们将这个实现称为ZeRO-100B。我们的结果表明，ZeRO-100B可以高效地训练具有高达1700亿参数的模型，比当前最先进模型大8倍，速度提高了10倍，并且具有更好的可用性。ZeRO-100B支撑着Turing-NLG，这是世界上最大的已发布模型，具有新的最先进的准确性水平。<br>
+
+## 10.1 实施和方法论
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**实施方式**：我们在PyTorch中实现了ZeRO-100B，包括 $P_{os+g}$ 和ZeRO-R中的全部优化策略。它的接口与任何以torch.nn.module实现的模型兼容。用户只需使用这个接口包装他们的模型，并利用ZeRO-DP的功能，就像使用经典的DP一样。用户不需要修改他们的模型。ZeRO-DP可以与包括Megatron-LM在内的任何形式的MP相结合使用。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**硬件**：我们在一个由**400个V100 GPU（25个DGX-2节点**）组成的集群上进行了实验，节点之间的通信带宽为800 Gbps。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**基准**：对于没有使用MP的实验，我们使用torch的分布式数据并行（DDP）作为基准。对于使用MP的实验，我们使用Megatron-LM，因为据我们所知，它是最先进的。我们使用NVIDIA的开源版本Megatron-LM 4，日期为2019年9月。最新的Megatron-LM结果报告了使用**32个DGX-2节点（总共512个32GB V100 GPU**）可以扩展到16B参数模型 [3]。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**ZeRO**：没有使用MP的实验使用ZeRO-100B中的ZeRO-DP实现。使用MP的实验将ZeRO-DP与Megatron-LM的MP相结合。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**模型配置**：本节中介绍的模型是基于GPT-2 [2]的transformer模型。我们改变隐藏维度和层数，以获得具有不同参数数量的模型。表4显示了我们实验中使用的配置参数，附录中提供了更多细节。<br>
+
+![table4](images/zero1_table4.jpg)
+
+![figure2](images/zero1_figure2.jpg)
+
+## 10.2 速度和模型大小
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-100B可以在400个GPU上高效地运行高达1700亿参数的模型，比Megatron-LM大8倍以上。图2显示了使用ZeRO-100B与MP相比仅使用Megatron MP时，不同模型大小的每个GPU的吞吐量。对于具有8B到100B参数的模型，ZeRO-100B平均实现了可持续的吞吐量达到15 PetaFlops（超过峰值的30%）。相比之下，基准MP的性能随着模型规模的增加迅速下降：MP在GPU之间产生了很高的通信量，而在单个节点上容纳更大的模型会导致通信带宽从每个链接（NVSwitch）的300GB/秒下降到每个链接（Infiniband EDR）的12.5GB/秒，从而导致性能显著下降。ZeRO-100B相比基准可以获得高达10倍的加速，大型模型的性能明显优于基准。<br>
+*注释：吞吐量是指在一定时间内完成的任务数量或处理的数据量*
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于ZeRO-100B来说，超过100B后性能略有降低，这是因为没有足够的内存来运行更大的批次大小。我们预计随着GPU数量的增加，ZeRO-100B的性能将提高，因为ZeRO-100B具有超线性的加速，我们将在下文中讨论。<br>
