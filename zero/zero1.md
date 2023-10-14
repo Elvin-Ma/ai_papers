@@ -144,9 +144,9 @@ ZeRO-DP基于三个关键洞见：
 ## 7.1 数据并行通信量(ZeRO-DP Communication Volume)
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在数据并行训练中，在进行反向传播的最后，所有数据并行进程的梯度将被平均化，然后计算下一步的更新。平均化是通过一个全约减通信集合(all-reduce communication collective)操作来执行的。对于大型模型，全约减通信完全受到通信带宽的限制，因此我们将分析发送到每个数据并行进程以及从每个数据并行进程接收到的总通信量。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;全约减通信(all-reduce communication)的最优实现采用了两步方法，第一步是reduce-scatter操作，它在不同进程上reduce了数据的不同部分。下一步是all-gather操作，每个进程收集了所有进程上的reduce数据。这两个步骤的结果是全约减通信(all-reduce communication)。reduce-scatter和all-gather都使用了流水线(pipelined)方法来实现，导致每个步骤每张卡需要Ψ个元素的总数据移动量（对于具有Ψ个元素的数据）。因此，标准的数据并行方法在每个训练步骤(training step)中产生2Ψ个数据移动。<br>
-*(通信方法参考：https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html)*
-*reduce-scater：每一部分weight 通信了 $N_{d}$ 次, 平均一张卡通信没部分weight 都通信一次*
-*all-gather: 每张卡接受其他卡上的weight，并将自身weight传出去，数据总量正好为Ψ*
+*通信方法参考：https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html* <br>
+*reduce-scater：每一部分weight 通信了 $N_{d}$ 次, 平均一张卡通信没部分weight 都通信一次* <br>
+*all-gather: 每张卡接受其他卡上的weight，并将自身weight传出去，数据总量正好为Ψ* <br>
 
 # 7.2 ZeRO-DP通信量
 ## 7.2.1 使用 $P_{os+g}$ 的通信量
