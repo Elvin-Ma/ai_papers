@@ -21,4 +21,6 @@
 
 ![figure1](images/zero-offload-figure1.jpg)
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**可用性**：ZeRO-Offload作为开源PyTorch库DeepSpeed的一部分提供（www.deepspeed.ai）。与第2节讨论的大多数策略不同，ZeRO-Offload不需要对模型进行重构即可工作。实际上，PyTorch用户可以通过**对现有训练流程进行少量代码更改来启用ZeRO-Offload**，如图1所示，轻松训练10倍大的模型。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**可用性**：ZeRO-Offload作为开源PyTorch库DeepSpeed的一部分提供（www.deepspeed.ai）。与第2节讨论的大多数策略不同，ZeRO-Offload不需要对模型进行重构即可工作。实际上，PyTorch用户可以通过**对现有训练流程进行少量代码更改来启用ZeRO-Offload**，如图1所示，轻松训练10倍大的模型。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**贡献**：据我们所知，ZeRO-Offload是第一个完全分布式、基于CPU内存和计算资源的训练框架，用于训练大规模模型。我们总结其贡献如下：<br>
+
