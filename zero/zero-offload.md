@@ -19,3 +19,6 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了解决(address)这些挑战，ZeRO-Offload将独特的最佳卸载策略(optimal offload strategy)与基于ZeRO的数据并行相结合，而不是传统的数据并行。这种共生关系使得ZeRO-Offload能够在不考虑数据并行度的情况下，在CPU内存上维护优化器状态的**单个副本**。此外，它保持了GPU和CPU之间的总通信量以及CPU总计算的恒定，而不考虑数据并行性，使得ZeRO-Offload能够有效利用随着数据并行度增加而线性增加的CPU计算能力。因此，ZeRO-Offload在最多128个GPU上实现了出色的可扩展性。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;除了与基于ZeRO的数据并行相结合外，当有多个GPU可用时，ZeRO-Offload还可以与模型并行相结合[27, 28]，以实现更高的内存节省。<br>
 
+![figure1](images/zero-offload-figure1.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**可用性**：ZeRO-Offload作为开源PyTorch库DeepSpeed的一部分提供（www.deepspeed.ai）。与第2节讨论的大多数策略不同，ZeRO-Offload不需要对模型进行重构即可工作。实际上，PyTorch用户可以通过**对现有训练流程进行少量代码更改来启用ZeRO-Offload**，如图1所示，轻松训练10倍大的模型。
