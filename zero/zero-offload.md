@@ -38,6 +38,11 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;尽管模型并行、流水线并行和ZeRO等方法能够训练大型模型，但它们都需要多个GPU，以使聚合GPU内存能够容纳用于训练大型模型的模型状态和残余状态(model and residual states)。相比之下，ZeRO-Offload的设计目的是通过将模型状态卸载到CPU内存中来适应更大的模型，并且可以在单个GPU上训练比原来大10倍的模型，而不会牺牲效率。当有多个GPU可用时，ZeRO-Offload被设计为与ZeRO一起工作，以提供出色的可扩展性，或与模型并行(MP)结合使用，以适应甚至比ZeRO-Offload或单独的模型并行更大的模型尺寸。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**扩展(scale up)大型模型训练**。现有的工作通过三种主要方法在单个GPU上扩展模型大小。第一种方法通过从检查点重新计算来交换计算与激活（残余内存）的内存节省 [4]。第二种方法使用压缩技术，例如使用低精度或混合精度 [16] 进行模型训练，从而节省模型状态和激活的内存。第三种方法使用外部内存，例如CPU内存作为GPU内存的扩展，在训练过程中增加内存容量 [8, 9, 11, 17, 23, 24, 33]。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们的工作ZeRO-Offload属于第三种方法。与ZeRO-Offload不同，上述工作只是将数据卸载到CPU而不是计算，并且它们使用较小的模型进行训练。此外，上述工作中没有一个是通信最优的，导致CPU和GPU之间产生额外的通信，影响训练吞吐量。相比之下，最近的一项名为L2L [18] 的工作可以通过逐层管理GPU内存使用情况来实现数百亿参数的训练。特别是，L2L会将下一层需要的张量同步移动到GPU内存进行计算，并将其余的张量保存在CPU内存中以节省内存。与ZeRO-Offload相比，它的效率有限，由于额外的通信开销，它无法在设备间进行扩展，并且需要对模型进行重构，使得使用起来更加困难。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO 强化的数据并行训练。ZeRO-Offload 与 ZeRO 协同工作，将深度学习训练扩展到多个GPU。ZeRO 有三个阶段，分别是 ZeRO-1、ZeRO-2 和 ZeRO-3，对应于三种不同的模型状态(model state)、优化器状态(optimizer state)、梯度(grad)和参数(parameters)的分区。ZeRO-1 仅对优化器状态进行分区，而 ZeRO-2 除了优化器状态外，还对梯度进行分区，而 ZeRO-3 对所有模型状态进行分区。ZeRO-Offload 与 ZeRO-2 协同(symbiotically)工作，因此我们进一步讨论它。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在 ZeRO-2 中，每个 GPU 存储所有参数(parameters)的副本，但在每个训练步骤结束时，只更新其中互斥(mutually)的一部分参数。由于每个 GPU 仅更新部分参数，它们仅存储更新参数(parameters)**所需的优化器状态和梯度**。更新完成后，每个 GPU 使用全局聚集(all-gather)通信集合(communicate collectives)将其更新后的参数部分发送给所有其他 GPU。ZeRO-2 的计算和通信进度如下：<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在前向传播过程中，每个 GPU 对不同的小批量样本(mini-batch)计算损失。在反向传播过程中，每计算一个梯度，都会使用一个 reduce 运算符对拥有该梯度或梯度部分的 GPU/GPUs 进行平均。在反向传播完成后，每个 GPU 使用对应部分的**平均梯度**更新其参数和优化器状态。之后，执行全局聚集(all-gather)操作以接收其他 GPU 计算的参数更新的其余部分。<br>
+
+# 3 独特的最优卸载策(Unique Optimal Offload Strategy)
 
 
 
