@@ -37,7 +37,7 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;最近的一个工作，ZeRO [21]，提供了一种训练大型模型的替代方案，它不同于模型并行和流水线并行。ZeRO将训练批次分配到多个GPU上，类似于数据并行训练 [5, 26, 35]，但与数据并行训练不同的是，它不会在每个GPU上复制所有的模型状态，而是将它们分割到所有的GPU上，并使用通信集合(communication collectives)在训练过程中根据需要收集各个参数。ZeRO不需要对用户模型进行更改，因此比模型或流水线并行训练更通用。它还提供更好的计算效率和可扩展性。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;尽管模型并行、流水线并行和ZeRO等方法能够训练大型模型，但它们都需要多个GPU，以使聚合GPU内存能够容纳用于训练大型模型的模型状态和残余状态(model and residual states)。相比之下，ZeRO-Offload的设计目的是通过将模型状态卸载到CPU内存中来适应更大的模型，并且可以在单个GPU上训练比原来大10倍的模型，而不会牺牲效率。当有多个GPU可用时，ZeRO-Offload被设计为与ZeRO一起工作，以提供出色的可扩展性，或与模型并行(MP)结合使用，以适应甚至比ZeRO-Offload或单独的模型并行更大的模型尺寸。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**扩展(scale up)大型模型训练**。现有的工作通过三种主要方法在单个GPU上扩展模型大小。第一种方法通过从检查点重新计算来交换计算与激活（残余内存）的内存节省 [4]。第二种方法使用压缩技术，例如使用低精度或混合精度 [16] 进行模型训练，从而节省模型状态和激活的内存。第三种方法使用外部内存，例如CPU内存作为GPU内存的扩展，在训练过程中增加内存容量 [8, 9, 11, 17, 23, 24, 33]。<br>
-*注释：混合精度介绍 https://developer.nvidia.com/automatic-mixed-precision*
+*注释：混合精度介绍 https://developer.nvidia.com/automatic-mixed-precision* <br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们的工作ZeRO-Offload属于第三种方法。与ZeRO-Offload不同，上述工作只是将数据卸载到CPU而不是计算，并且它们使用较小的模型进行训练。此外，上述工作中没有一个是通信最优的，导致CPU和GPU之间产生额外的通信，影响训练吞吐量。相比之下，最近的一项名为L2L [18] 的工作可以通过逐层管理GPU内存使用情况来实现数百亿参数的训练。特别是，L2L会将下一层需要的张量同步移动到GPU内存进行计算，并将其余的张量保存在CPU内存中以节省内存。与ZeRO-Offload相比，它的效率有限，由于额外的通信开销，它无法在设备间进行扩展，并且需要对模型进行重构，使得使用起来更加困难。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO 强化的数据并行训练。ZeRO-Offload 与 ZeRO 协同工作，将深度学习训练扩展到多个GPU。ZeRO 有三个阶段，分别是 ZeRO-1、ZeRO-2 和 ZeRO-3，对应于三种不同的模型状态(model state)、优化器状态(optimizer state)、梯度(grad)和参数(parameters)的分区。ZeRO-1 仅对优化器状态进行分区，而 ZeRO-2 除了优化器状态外，还对梯度进行分区，而 ZeRO-3 对所有模型状态进行分区。ZeRO-Offload 与 ZeRO-2 协同(symbiotically)工作，因此我们进一步讨论它。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在 ZeRO-2 中，每个 GPU 存储所有参数(parameters)的副本，但在每个训练步骤结束时，只更新其中互斥(mutually)的一部分参数。由于每个 GPU 仅更新部分参数，它们仅存储更新参数(parameters)**所需的优化器状态和梯度**。更新完成后，每个 GPU 使用全局聚集(all-gather)通信集合(communicate collectives)将其更新后的参数部分发送给所有其他 GPU。ZeRO-2 的计算和通信进度如下：<br>
@@ -51,6 +51,21 @@
 
 ## 3.1 将深度学习训练视为数据流图
 
+![figure2](images/zero-offload-figure2.jpg) 
+
+*注释：具有M个参数的全连接神经网络的数据流。我们使用激活检查点来减少激活内存，以避免在CPU和GPU之间进行激活迁移。* <br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;深度学习训练工作负载(workload)可以表示为一个加权有向图(directed graph)，其中包含数据和计算，如图2所示。图中的圆形节点表示模型状态(parameter16、gradient16、parameter32、momentum32、variance32)，矩形节点表示计算（forward、backward、param update）。图中的边表示节点之间的数据流动，边的权重是在任何给定的训练迭代期间通过该边流动的总数据量（以字节为单位）。对于具有M个参数的模型，图中边的权重可以是2M（当源节点生成fp16模型状态）或4M（当源节点生成fp32模型状态）。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GPU和CPU之间的卸载策略可以使用该图的双向分区来表示，其中分区中的计算节点将在拥有该分区的设备上执行，而分区中的数据节点将存储在拥有该分区的设备上。通过运行跨越两个分区的边的权重，可以确定在GPU和CPU之间必须进行通信的总数据量(2M + 2M)。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;有许多方法可以对这个图进行分区。在接下来的几节中，我们使用第一性原则来简化数据流图，以减少基于三个不同的效率指标的可能选择数量：i) CPU计算开销，ii) 通信开销，和 iii) 内存节省。
+
+## 3.2 限制CPU计算
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;与GPU计算吞吐量相比，CPU计算吞吐量慢了几个数量级。因此，将大型计算图卸载到CPU上会严重限制训练效率。因此，我们**必须避免将计算密集型组件卸载到CPU上**。<br> 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;深度学习训练每次迭代(iter)的**计算复杂度**通常为O(MB)，其中M是模型大小，B是有效批量大小。为避免CPU计算成为瓶颈，只有那些计算复杂度低于O(MB)的计算才应该被卸载到CPU上。这意味着前向传播和反向传播都具有O(MB)的计算复杂度，必须在GPU上完成，而其他计算，如**范数计算、权重更新等，其复杂度为O(M)，可以卸载到CPU上**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;基于这个简单的观察，我们将数据流图中的前向传播和反向传播节点合并为一个超级节点（FWD-BWD）并分配给GPU。<br>
+
+## 3.3 最小化通信量
+CPU内存带宽至少比CPU和GPU之间的PCI-E带宽快一个数量级(an order of), 而GPU内存比CPU内存甚至快一个数量级。因此，我们必须最小化CPU和GPU内存之间的通信量，以防止PCI-E带宽成为训练性能瓶颈。为此，我们必须首先确定模型状态卸载策略的理论最小通信量。<br>
 
 
 
