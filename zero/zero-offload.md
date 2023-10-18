@@ -70,6 +70,29 @@
 *请注意，通过仅卸载部分模型状态，可以进一步减少通信量。为简化起见，我们假设模型状态的卸载意味着我们卸载整个模型状态。即使我们卸载部分模型状态，我们对通信量的内存节省的分析仍然成立。* <br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如果我们选择将通信量限制在这个最低限度上，我们可以极大地简化我们的数据流图，并将分区策略的数量减少到只有几个：创建fp32超级节点。请注意，任何不将fp32模型状态与其生产者和消费者节点共享的分区策略都无法实现最小的通信量4M。这样的分区必须至少切断一条权重为4M的边和另一条至少2M的边，从而导致至少6M的通信量。因此，为了实现最小的通信量，所有的**卸载策略都必须将fp32模型状态与其生产者和消费者操作符共享**，即fp32模型状态（momentum32、variance32和parameter32）必须与**参数更新和float2half计算共享位置**。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这个约束条件使得我们可以将数据流图中所有提到的fp32数据和计算节点视为一个称为"Update Super"的单个超级节点。我们在图2中展示了这个简化后的数据流图，它只包含四个节点：FWD-BWD超级节点、p16数据节点、g16数据节点和Update Super节点。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;p16赋值。为了实现最小的通信量，p16必须与FWD-BWD Super节点共享位置，因为这两个节点之间的边权重为4M。如果将这两个节点分开，通信量将增加到6M（即4M + 2M）。由于我们已经将节点FWD-BWD Super分配给GPU以限制在CPU上的计算，p16也必须分配给GPU。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**p16赋值**. 为了实现最小的通信量，p16必须与FWD-BWD Super节点共享位置，因为这两个节点之间的边权重为4M。如果将这两个节点分开，通信量将增加到6M（即4M + 2M）。由于我们已经将节点FWD-BWD Super分配给GPU以限制在CPU上的计算，p16也必须分配给GPU。<br>
+## 3.4 最大化GPU内存节省
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在简化数据流图以最小化通信量之后，只剩下g16和Update Super需要进行分配(assigned)。请注意，在这一点上，所有的分区都将导致最小的通信量，因此我们可以进一步剪枝选择，以最大化在GPU上的内存节省。表1显示了所有有效的最小化通信量的分区策略的内存节省情况。通过**将g16和Update Super都卸载到CPU上，可以实现最大的8倍内存节省**。 <br>
 
+![table1](images/zero-offload-table1.jpg) 
 
+## 3.5 独特且最优(Optimal)的卸载策略(Offload strategy)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Offload将所有的fp32模型状态和fp16梯度分配到CPU内存中，并在CPU上计算参数更新。fp16参数(parameter)保留在GPU上，并且正向和反向计算也在GPU上进行。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通过简化我们的数据流图并消除所有其他分区策略，我们得出了这个卸载策略。因为其他分区(partitioning)策略不限制CPU计算、最小化通信量或最大化内存节省。因此，ZeRO-Offload不仅在上述指标上是最优的(optimal)，而且是独特的(unique)；没有其他策略可以在不增加**CPU计算复杂度**或产生额外的**GPU-CPU通信量**的情况下提供比ZeRO-Offload更多的内存节省。<br>
+
+# 4 ZeRO-Offload调度
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们将讨论在基于我们的卸载策略的单GPU系统上实现ZeRO-Offload的具体计算和通信调度。然后，我们将展示如何将这个调度有效地扩展到多GPU系统上，通过将我们的卸载策略与ZeRO数据并行和模型并行相结合。<br>
+
+## 4.1 单GPU调度
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如第3节所讨论的，ZeRO-Offload对数据进行分区，将fp16参数存储在GPU中，而将fp16梯度和所有优化器状态(如fp32动量、方差和参数(parameters))存储在CPU中。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在训练过程中，我们首先通过前向传播计算损失。由于fp16参数已经存在于GPU上，因此在这部分计算中不需要进行CPU通信。在反向传播过程中，不同参数的梯度在反向计算的不同时间点上被计算出来。ZeRO-Offload可以**立即将这些梯度逐个或小组地**传输到CPU内存中。因此，在将梯度传输到CPU内存之前，GPU内存只需要**暂时**存储少量的梯度。此外，每个梯度传输可以与反向图中剩余部分的反向传播重叠，使**ZeRO-Offload能够隐藏大部分通信成本**。<br>
+
+![figure3](images/zero-offload-figure3.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在反向传播之后，ZeRO-Offload直接在CPU上更新fp32参数和剩余的优化器状态（如动量和方差），并将更新后的fp32参数从CPU内存复制到GPU内存中的fp16参数。图3以示意图的形式展示了ZeRO-Offload每个步骤中的计算和通信过程，图5以伪代码的形式展示了具体的调度。<br>
+
+![figure5](images/zero-offload-figure5.jpg) 
+
+## 4.2 扩展到多个GPU
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Offload的整体是ZeRO-Offload策略（在第3节中描述）和ZeRO支持的数据并行（在第2节中讨论）的共生集成，使得ZeRO-Offload能够高效地扩展到数百个GPU。ZeRO-Offload保留了ZeRO Stage-2(优化器状态和梯度分区)的模型状态分区策略，同时将分区的梯度、优化器状态和相应的参数更新卸载到CPU上。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**在卸载之前进行这种分区**的关键好处是，对于具有多个GPU的系统，每个数据并行进程只负责更新参数的子集。从所有数据并行GPU到CPU的聚合通信量保持不变，并且CPU资源被并行使用来共同计算单个权重更新。因此，随着数据并行性的增加，总的CPU更新时间减少，因为CPU计算资源随计算节点数量的增加而线性增加。这使得ZeRO-Offload能够实现非常好的可扩展性，因为跨GPU的通信开销被CPU优化器步骤的减少所抵消。<br>
