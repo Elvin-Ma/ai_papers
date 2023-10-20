@@ -97,3 +97,29 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Offload的整体是ZeRO-Offload策略（在第3节中描述）和ZeRO支持的数据并行（在第2节中讨论）的共生集成，使得ZeRO-Offload能够高效地扩展到数百个GPU。ZeRO-Offload保留了ZeRO Stage-2(优化器状态和梯度分区)的模型状态分区策略，同时将分区的梯度、优化器状态和相应的参数更新卸载到CPU上。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**在卸载之前进行这种分区**的关键好处是，对于具有多个GPU的系统，每个数据并行进程只负责更新参数的子集。从所有数据并行GPU到CPU的聚合通信量保持不变，并且**CPU资源被并行使用来共同计算单个权重更新**。因此，随着数据并行性的增加，**总的CPU更新时间减少(同时更新不同参数)**，因为CPU计算资源随计算节点数量的增加而线性增加。这使得ZeRO-Offload能够实现非常好的可扩展性，因为跨**GPU的通信开销被CPU优化器步骤的减少所抵消**。<br>
 
+![figure4](images/zero-offload-figure4.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Offload将梯度和优化器状态分割成不同的GPU之间，并且每个GPU将自己所拥有的分割部分卸载到CPU内存中，并在整个训练过程中保持在那里。在反向传播过程中，使用GPU上的reduce-scatter计算和平均梯度，每个GPU只将属于其分割(partitions)部分的平均梯度卸载到CPU内存中(先reduce-scatter 再 卸载)。一旦梯度在CPU上可用，每个数据并行进程直接在CPU上并行更新优化器状态分割。更新完成后，参数分割会移回GPU，并在GPU上进行类似于ZeRO-2的全收集操作(all-gather)，以收集所有参数。图4显示了数据的流动过程。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**模型并行训练**：ZeRO-Offload还可以与基于张量切片(Tensor slicing)的模型并行(MP)框架(如Megatron-LM [28])一起使用。它通过将梯度、优化器状态和**每个MP进程对应的优化器计算卸载**,使ZeRO-Offload能够训练比单独使用模型并行更大的模型。第6节提供了更多详细信息。<br>
+
+# 5 优化的CPU执行
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们通过两种优化方法加快了参数更新的CPU执行时间。首先，我们使用高性能计算技术实现了一个快速的CPU Adam优化器，相比于最先进的PyTorch实现，提供了显著的加速。其次，我们开发了一种一步延迟(delayed)的参数更新计划，将CPU参数更新计算与GPU上的前向和反向计算重叠，当启用时**隐藏了CPU执行时间**。<br>
+## 5.1 实现CPU优化器
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们使用三种级别的并行性来提高CPU优化器的性能。1）SIMD向量指令[15]，充分利用CPU架构上支持的硬件并行性。2）循环展开[31]，这是一种增加指令级并行性的有效技术，对于更好地利用内存带宽至关重要。3）OMP多线程用于有效地并行利用CPU上的多个核心和线程。利用这些技术，我们相比于最先进的PyTorch实现，提供了一个显著更快的Adam优化器实现。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**混合精度训练与Adam**: Adam是一种用于深度学习训练的优化算法，它将损失梯度与它们的一阶和二阶动量一起使用来更新参数。因此，除了模型参数外，Adam在训练过程中还需要保存两个相同大小的矩阵(M)。在混合精度训练模式下，内存中存储着两个版本的参数：一个是在fp16(parameter16)中存储的，用于在前向传递(在GPU上)中计算激活值；另一个是在fp32(parameter32)中存储的主副本，由优化器（在CPU上）进行更新。在每个训练步骤中，通过float2half转换，将parameter32的值更新到parameter16中。此外，梯度的动量和方差以fp32格式（在CPU上）保存，以防止更新参数时的精度损失。有关Adam算法的更多详细信息，请参考[13]。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;优化实现算法1详细说明了使用SIMD(Single Instruction Multiple Data)操作的Adam实现细节。如所示，Adam函数接收优化器参数（如 $β_{1}$ 、 $β_{2}$ 和α）、梯度、动量、方差和参数的主副本(parameter32)作为输入。我们还使用了一些特定于实现的参数，例如simd_width和unroll_width。Adam优化器将更新后的方差、动量和参数分别以fp16（发送到GPU）和fp32（发送到CPU）的形式返回。<br>
+
+![algorithm1](images/zero-offload-algorithm1.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;首先，我们将包括参数、梯度、动量和方差在内的数据读入向量寄存器（第7行）。然后，我们使用多个融合乘加（FMA）向量操作执行主要的执行流水线，该流水线会根据展开宽度进行重复。需要注意的是，其余的操作，如乘法、除法和平方根，也在向量模式下运行。为了获得最佳性能，我们使用AVX512 SIMD指令集和展开宽度为8，这是基于自动调优结果得出的。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;除了CPU-Adam优化器之外，我们以分块的方式实现了CPU到GPU的fp16参数复制（第15行）。我们通过将Adam计算和将参数复制到GPU并行来重叠CPU和GPU的执行。当我们在CPU上处理当前数据块的Adam计算时，我们将之前处理过的数据块写回GPU。这样，我们减少了GPU的空闲时间，可以立即开始处理下一个训练步骤。<br>
+
+# 5.2 延迟一步的参数更新
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;尽管使用了高度优化的CPU优化器，但在使用非常小的批量大小进行训练时，当GPU计算时间与CPU计算时间相差不大时，CPU计算开销可能成为瓶颈。针对这种有限的情况，我们开发了一步延迟的参数更新（DPU），通过延迟一个步骤(one-step)的参数更新来重叠CPU和GPU计算，以隐藏CPU计算开销。我们验证了DPU对训练的最终准确性没有影响。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**DPU训练计划** 图6展示了具有延迟参数更新的ZeRO-Offload训练过程的工作流程。➊前N-1步是在没有DPU的情况下进行训练，以避免在梯度快速变化的早期阶段不稳定训练。➋在第N步，我们从GPU获取梯度，但跳过CPU优化器步骤，也不更新GPU上的fp16参数。➌在第N+1步，我们使用第N步的梯度在CPU上计算参数更新，同时在GPU上使用在第N-1步更新的参数并行计算前向和反向传递。从这一步开始，**第(i+1)步的模型将使用从第(i-1)步的梯度更新的参数进行训练**，而不是使用第i步更新的参数，从而实现了CPU计算和GPU计算的重叠。<br>
+
+![figure6](images/zero-offload-figure6.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;准确性和效率之间的权衡。由于DPU改变了训练的语义，合理地提出是否存在模型准确性和训练效率之间的权衡。为了回答这个问题，我们在多个训练工作负载上评估了DPU，并发现如果我们在几十次迭代之后引入DPU，而不是在开始时引入DPU，它不会影响收敛性。我们在第6节的评估结果表明，与仅使用ZeRO-Offload进行训练相比，延迟参数更新的训练在保持相同模型训练准确性的同时获得了更高的训练吞吐量。<br>
+
+
