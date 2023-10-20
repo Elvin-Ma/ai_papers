@@ -122,4 +122,59 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;准确性和效率之间的权衡。由于DPU改变了训练的语义，合理地提出是否存在模型准确性和训练效率之间的权衡。为了回答这个问题，我们在多个训练工作负载上评估了DPU，并发现如果我们在几十次迭代之后引入DPU，而不是在开始时引入DPU，它不会影响收敛性。我们在第6节的评估结果表明，与仅使用ZeRO-Offload进行训练相比，延迟参数更新的训练在保持相同模型训练准确性的同时获得了更高的训练吞吐量。<br>
 
+# 6 评估
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;本节旨在回答以下问题，与最先进的方法进行比较：<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(i) 与现有的单个GPU/DGX-2节点上的数十亿参数训练解决方案相比，ZeRO-Offload如何扩展可训练模型的大小？<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(ii) 在单个GPU/DGX-2节点上，ZeRO-Offload的训练吞吐量是多少？<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(iii) ZeRO-Offload的吞吐量如何随着GPU数量增加而扩展，最多可达128个GPU？<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;(iv) 我们的CPU-Adam和延迟参数更新（DPU）对提高吞吐量的影响如何，DPU是否改变模型的收敛性？<br>
+
+## 6.1 评估方法论
+
+![table2](images/zero-offload-table2.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;测试环境。为了评估模型规模和吞吐量，我们在一个DGX-2节点上进行实验，该节点的详细信息列在表2中。为了评估吞吐量的可扩展性，我们使用一台648端口的Mellanox MLNX-OS CS7500交换机，将8个Nvidia DGX-2节点通过InfiniBand连接在一起。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**工作负载** 在性能评估中，我们重点评估类似GPT-2[19]的基于Transformer的模型[30]。我们改变隐藏维度(hidden size)和Transformer块(block)的数量，以获得具有不同参数数量的模型。需要注意的是，仅仅增加深度通常是不够的，因为这会使训练更加困难[12]。表3显示了我们实验中使用的配置参数。<br>
+
+![table3](images/zero-offload-table3.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于收敛性(convergence)分析，例如延迟参数更新，我们使用了GPT-2 [19]和BERT [6]。这两个模型都是常用的预训练语言模型，在许多自然语言处理任务（如自然语言理解和推理）中表现出优越性能，优于循环神经网络或卷积神经网络。我们使用的BERT-large与[6]中的模型相同，具有24层、1024隐藏层、16个注意头和336M个参数。类似于[21, 28]，我们在斯坦福问答数据集（SQuAD）[1]上对BERT进行微调，该数据集是最常用的阅读理解基准之一[22]。除非另有说明，我们遵循[6, 19]中相同的训练流程和超参数设置。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**baseline基准线**。我们将ZeRO-Offload的有效性与先进的数十亿参数训练解决方案进行比较：<br>
+- PyTorch DDP：这是使用DistributedDataParallel实现的现有PyTorch Transformer。[14] <br>
+- Megatron [28]：当前最先进的多十亿参数模型训练解决方案之一，使用模型并行性可以使用512个GPU训练高达8.3B参数的模型。<br>
+- SwapAdvisor [9]：SwapAdvisor利用遗传算法在GPU和CPU内存之间指导模型无关的张量交换，以节省GPU内存。<br>
+- L2L [18]：L2L通过一次只在GPU内存中保留一个Transformer块，并在需要时将张量移入即将到来的Transformer块中的方式，实现对深度Transformer网络的训练。<br>
+- ZeRO-2 [21]：ZeRO通过消除多个GPU之间的内存冗余来扩展数据并行性，允许使用25个DGX-2节点以高训练吞吐量训练高达170B参数的模型。ZeRO-2在大模型训练方面取得了最先进的结果，是一个强有力的基准。<br>
+
+## 6.2 实验结果
+### 6.2.1 模型规模
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;作为实现大规模模型训练的重要一步，我们首先在单个GPU上以及单个DGX-2节点的16个GPU上测试了最大的可训练模型。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**单个GPU** 在单个具有32GB内存的GPU上，使用PyTorch DDP可以训练的最大模型大小为1.4B(14亿参数量)，超出内存限制后无法训练，如图7所示。Megatron和ZeRO-2在单个GPU上与PyTorch相比没有增加可训练模型的大小，因为它们都利用聚合的GPU内存来容纳更大的模型。相比之下，**ZeRO-Offload在单个GPU上可以训练13B的模型**，比使用PyTorch、Megatron和ZeRO-2大9倍以上。这主要是因为ZeRO-Offload通过将昂贵的状态（如优化器状态和大部分梯度）卸载到CPU内存，以最大程度地节省GPU上的内存。使用SwapAdvisor在单个GPU上可以训练的最大模型为8B，比ZeRO-Offload能够训练的模型小38%。SwapAdvisor依赖于黑盒方法，并使用模拟器来预测哪些张量更频繁使用，以便将它们保留在GPU内存中，以最大化训练吞吐量。预测可能不完全准确，因此SwapAdvisor在GPU内存中保留的张量比ZeRO-Offload多。另一方面，L2L通过频繁地将未使用层的权重移动到CPU内存中，能够在单个GPU上训练更大的模型（例如17B）。然而，当使用多个GPU训练L2L时，最大模型大小不会增加，这将在下文进行讨论。<br>
+
+![figure7](images/zero-offload-figure7.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**单个DGX-2节点上的多GPU** 我们进一步在单个DGX-2节点上使用4个和16个GPU进行模型规模测试。如图7所示，PyTorch、L2L和SwapAdvisor的最大可训练模型大小**保持不变**，因为它们都没有处理数据并行性中的内存冗余。因此，它们的可扩展性受限于单个GPU上的模型规模。Megatron和ZeRO-2都支持使用更多GPU进行大规模模型训练，但它们即使在使用16个GPU时也无法高效扩展到超过15B个参数。**Megatron支持比ZeRO-2更大的模型**，因为ZeRO-2在模型权重上仍然产生内存冗余。另一方面，ZeRO-Offload通过将优化器状态和梯度分区和卸载到CPU内存中，**结合模型并行性**，轻松实现了高达70B个参数的模型训练。总体而言，与使用PyTorch、Megatron、ZeRO-2和L2L相比，ZeRO-Offload分别将单个DGX-2节点上的模型规模增加了50倍、4.5倍、7.8倍和4.2倍。<br>
+
+### 6.2.2 训练的吞吐量
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**单个GPU** 接下来，我们比较SwapAdvisor、L2L和ZeRO-Offload在单个GPU上针对具有十亿级参数的模型的训练吞吐量。我们在这个比较中不包括Megatron和ZeRO-2，因为它们都无法训练超过1.4B个参数的模型，由于内存不足。我们使用相同的训练批量大小（例如512）和相同的微批量大小（在表3中显示），同时启用梯度累积。在这个实验中，我们还禁用了延迟参数更新，以便比较仅从系统效率的角度进行。我们将在第6.2.4节中评估性能改进及其对延迟参数更新收敛性的影响。
+*注释：启用梯度累积意味着在进行参数更新之前，将多个小批量的梯度累积起来，然后再进行一次大的参数更新。通常情况下，每个小批量的梯度更新会立即应用于模型参数，但当内存有限或者模型非常大时，可能无法同时处理整个批量的梯度。为了解决这个问题，可以选择启用梯度累积，将多个小批量的梯度累积起来，直到累积的梯度达到足够的大小，然后再进行一次参数更新。这样可以降低对内存的需求，同时保持相对较大的批量大小，从而提高训练的吞吐量。*
+
+![table3](images/zero-offload-table3.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;图8显示，ZeRO-Offload在训练吞吐量方面比SwapAdvisor表现更好，提高了23%（最高可达37%）。SwapAdvisor依赖在线遗传算法来进行张量交换决策，在寻找最大化计算与张量交换重叠的最优解方面需要花费几个小时的时间。在获得**最优的张量交换解**之前，SwapAdvisor会尝试随机的张量交换解，这会对训练性能造成影响。<br>
+
+![figure8](images/zero-offload-figure8.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;图8显示，ZeRO-Offload在吞吐量（TFLOPS）上比L2L平均提高了14%（最高可达22%）。ZeRO-Offload的性能优势来自以下两个方面。首先，与L2L相比，ZeRO-Offload在CPU和GPU之间具有较低的通信成本。对于一个具有M个参数的模型，**L2L需要在GPU和CPU之间进行28M的数据通信量**，这是模型每个层的权重、梯度和优化器状态之和。如4.1节中分析的那样，**ZeRO-Offload中CPU与GPU内存之间的通信量为4M**，比L2L小了7倍。减少的通信量显著缓解了CPU-GPU通信带宽瓶颈。其次，与L2L相比，**ZeRO-Offload的参数更新发生在CPU**上而不是GPU上，但我们优化的CPU-Adam实现在参数更新性能上与PyTorch Adam在GPU上的实现非常相似（在6.2.4节中评估）。因此，尽管**L2L中GPU上的优化器更新略快于ZeRO-Offload中CPU上的优化器更新**，但L2L引入的通信开销导致整体吞吐量比ZeRO-Offload慢。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**多GPU在单个DGX-2节点上** 接下来，我们比较了PyTorch、ZeRO-2、Megatron、没有模型并行性的ZeRO-Offload（without MP）以及具有模型并行性的ZeRO-Offload（with MP）在一个DGX-2节点上的训练吞吐量。在使用模型并行性(MP)时，我们选择一个在基准模型和ZeRO-Offload中都能获得最佳性能的模型并行度。我们对所有实验使用总批量大小(batch size)为512，结合每个GPU的微批量和梯度累积。为了获得每个配置的最佳性能，我们使用最大的微批量大小，以免发生内存不足错误。在这个测试中，我们排除了L2L [29]，因为它的实现不支持多GPU训练。<br>
+
+![figure9](images/zero-offload-figure9.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;根据图10，在多个GPU上训练时，我们可以得出以下观察结果：
+- 对于10亿到150亿参数的模型，ZeRO-Offload的吞吐量最高，分别比PyTorch、ZeRO-2和Megatron高出1.33倍、1.11倍和1.64倍。**通过将所有优化器状态低开销地卸载到CPU上，ZeRO-Offload可以使用更大的微批量大小进行训练，从而获得更高的吞吐量**。<br>
+- ZeRO-2在模型大小超过80亿时会出现内存不足的情况，因为16个GPU上的聚合内存**不足以存储模型状态**。相反，ZeRO-Offload可以在没有模型并行性的情况下扩展到130亿规模，因为它将优化器状态和大部分梯度卸载到CPU内存中。<br>
+- 当与模型并行性结合时，ZeRO-Offload可以实现每个GPU超过**30TFLOPS的吞吐量**，训练高达700亿参数的模型。相比之下，Megatron仅支持最多150亿参数的模型，并在使用模型并行性时内存不足。<br>
+- 比较ZeRO-Offload与ZeRO-2和Megatron，对于10亿到80亿参数的模型，ZeRO-Offload在吞吐量上胜过ZeRO-2和Megatron。ZeRO-Offload比Megatron更快，因为**它消除了不同GPU之间的频繁通信(optimizer的通信)**，并可以使用**更大的微批量大小**进行训练。ZeRO-Offload也胜过ZeRO-2，这也归因于**更大的微批量大小**。<br>
+
+
 
