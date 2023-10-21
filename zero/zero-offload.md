@@ -170,13 +170,13 @@
 
 ![figure9](images/zero-offload-figure9.jpg) 
 
-![figure10](images/zero-offload-figure10.jpg) 
-
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;根据图10，在多个GPU上训练时，我们可以得出以下观察结果：
 - 对于10亿到150亿参数的模型，ZeRO-Offload的吞吐量最高，分别比PyTorch、ZeRO-2和Megatron高出1.33倍、1.11倍和1.64倍。**通过将所有优化器状态低开销地卸载到CPU上，ZeRO-Offload可以使用更大的微批量大小进行训练，从而获得更高的吞吐量**。<br>
 - ZeRO-2在模型大小超过80亿时会出现内存不足的情况，因为16个GPU上的聚合内存**不足以存储模型状态**。相反，ZeRO-Offload可以在没有模型并行性的情况下扩展到130亿规模，因为它将优化器状态和大部分梯度卸载到CPU内存中。<br>
 - 当与模型并行性结合时，ZeRO-Offload可以实现每个GPU超过**30TFLOPS的吞吐量**，训练高达700亿参数的模型。相比之下，Megatron仅支持最多150亿参数的模型，并在使用模型并行性时内存不足。<br>
 - 比较ZeRO-Offload与ZeRO-2和Megatron，对于10亿到80亿参数的模型，ZeRO-Offload在吞吐量上胜过ZeRO-2和Megatron。ZeRO-Offload比Megatron更快，因为**它消除了不同GPU之间的频繁通信(MP需要在optimizer的通信上通信)**，并可以使用**更大的微批量大小**进行训练。ZeRO-Offload也胜过ZeRO-2，这也归因于**更大的微批量大小**。<br>
+
+![figure10](images/zero-offload-figure10.jpg) 
 
 ### 6.2.3 吞吐量可扩展性（Scalability）
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在图11中，我们比较了ZeRO-2和ZeRO-Offload在多达128个GPU上的吞吐量可扩展性，并得出以下关键观察结果：首先，ZeRO-Offload在聚合吞吐量（绿线）方面实现了几乎完美的线性加速，每个GPU的吞吐量超过30 TFlops（蓝色柱形图）。其次，在1到16个GPU时，ZeRO-2出现了内存不足的情况，而ZeRO-Offload可以有效地训练模型，使得模型训练从不可行变为可行。第三，在32个GPU时，ZeRO-Offload在吞吐量上略优于ZeRO-2。这种改进来自于ZeRO-Offload在GPU上的额外内存节省，它允许使用更大的批量大小来训练模型，从而提高了GPU的计算效率。第四，**在更多的GPU上（例如64和128个），ZeRO-2开始优于ZeRO-Offload**，因为两者现在可以运行相似的批量大小，从而实现相似的计算效率，而**ZeRO-2不会受到CPU-GPU通信的额外开销的影响**。总之，ZeRO-Offload为ZeRO-2提供了补充，并实现了从单个设备到数千个设备的大规模模型训练，并具有良好的计算效率。<br>
