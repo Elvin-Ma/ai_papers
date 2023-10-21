@@ -191,15 +191,13 @@ scheme)（如算法1的第15行所示）实现了高速度提升。同时，尽�
 ![figure9](images/zero-offload-figure9.jpg) 
 
 **B. 延迟参数更新（DPU）**。图9显示了启用和未启用DPU时GPT-2的训练吞吐量的比较。如图所示，在启用DPU的情况下，对于小微批量大小为8的各种模型大小，训练的吞吐量相比未启用DPU时提高了1.12到1.59倍的更新次数。这是可以预期的，因为DPU允许优化器的更新与下一次前向计算重叠，这样GPU就不必受到CPU计算和CPU-GPU通信的减速影响。但是，那么精度呢？ <br>
-
-![figure12](images/zero-offload-figure12.jpg) 
-
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**收敛影响**：我们研究了DPU对GPT-2和BERT的收敛影响(Convergence)。图12显示了使用PyTorch（未修改的GPT-2）进行100,000次训练迭代的预训练损失曲线，图13显示了在SQuAD上使用ZeRO-Offload进行BERT-large模型微调时，使用了无DPU的ZeRO-Offload和使用了DPU的ZeRO-Offload的损失曲线。在这两种情况下，在引入DPU之前的前40次迭代后启用DPU，以便训练在引入DPU之前的早期阶段稳定下来。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们观察到，未修改的GPT-2和无DPU的ZeRO-Offload的训练曲线完全重叠，因为无DPU的ZeRO-Offload仅执行系统优化，不改变训练动态。另一方面，**使用DPU的ZeRO-Offload的训练曲线在训练的最开始阶段（例如，在2,000到5,000次迭代中几乎看不到）收敛稍慢，但在5,000次迭代后迅速迎头赶上**。在训练的剩余部分中，训练损失与原始训练相匹配，直到模型收敛。<br>
 
-![figure13](images/zero-offload-figure13.jpg) 
+![figure12](images/zero-offload-figure12_13.jpg) 
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于Bert-Large微调任务，我们可以看到尽管训练损失并不完全相同，但它们以相同的趋势收敛，并且在很大程度上重叠。在不改变任何超参数的情况下，ZeRO-Offload + DPU实现了与基准模型相同的最终F1得分（92.8）。从这些关于GPT-2预训练和Bert-Large微调的结果来看，我们经验证明DPU是一种有效的技术，可以提高ZeRO-Offload的训练吞吐量，而不会对模型的收敛性和准确性造成损害。DPU引入的一步延迟(one-step delay)在模型经过初始训练阶段后，迭代训练过程中得到了很好的容忍(tolerated)。<br>
+
 ### 6.2.5 性能细分和分析
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了更好地理解ZeRO-Offload中卸载策略和优化技术带来的性能优势，我们评估了PyTorch、ZeRO-Offload与PT-CPU、ZeRO-Offload与CPU-Adam（简称为ZeRO-Offload）以及ZeRO-Offload与DPU的训练吞吐量。我们使用1亿参数的GPT-2模型在单个GPU上进行了各种批量大小的评估。图14显示了结果。<br>
 
