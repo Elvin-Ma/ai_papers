@@ -109,7 +109,7 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**混合精度训练与Adam**: Adam是一种用于深度学习训练的优化算法，它将损失梯度与它们的一阶和二阶动量一起使用来更新参数。因此，除了模型参数外，Adam在训练过程中还需要保存两个相同大小的矩阵(M)。在混合精度训练模式下，内存中存储着两个版本的参数：一个是在fp16(parameter16)中存储的，用于在前向传递(在GPU上)中计算激活值；另一个是在fp32(parameter32)中存储的主副本，由优化器（在CPU上）进行更新。在每个训练步骤中，通过float2half转换，将parameter32的值更新到parameter16中。此外，梯度的动量和方差以fp32格式（在CPU上）保存，以防止更新参数时的精度损失。有关Adam算法的更多详细信息，请参考[13]。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;优化实现算法1详细说明了使用SIMD(Single Instruction Multiple Data)操作的Adam实现细节。如所示，Adam函数接收优化器参数（如 $β_{1}$ 、 $β_{2}$ 和α）、梯度、动量、方差和参数的主副本(parameter32)作为输入。我们还使用了一些特定于实现的参数，例如simd_width和unroll_width。Adam优化器将更新后的方差、动量和参数分别以fp16（发送到GPU）和fp32（发送到CPU）的形式返回。<br>
 
-![algorithm1](images/zero-offload-algorithm1.jpg) 
+![algorithm2](images/zero-offload-algorithm2.jpg) 
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;首先，我们将包括参数、梯度、动量和方差在内的数据读入向量寄存器（第7行）。然后，我们使用多个融合乘加（FMA）向量操作执行主要的执行流水线，该流水线会根据展开宽度进行重复。需要注意的是，其余的操作，如乘法、除法和平方根，也在向量模式下运行。为了获得最佳性能，我们使用AVX512 SIMD指令集和展开宽度为8，这是基于自动调优结果得出的。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;除了CPU-Adam优化器之外，我们以分块的方式实现了CPU到GPU的fp16参数复制（第15行）。我们通过将Adam计算和将参数复制到GPU并行来重叠CPU和GPU的执行。当我们在CPU上处理当前数据块的Adam计算时，我们将之前处理过的数据块写回GPU。这样，我们减少了GPU的空闲时间，可以立即开始处理下一个训练步骤。<br>
@@ -170,11 +170,43 @@
 
 ![figure9](images/zero-offload-figure9.jpg) 
 
+![figure10](images/zero-offload-figure10.jpg) 
+
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;根据图10，在多个GPU上训练时，我们可以得出以下观察结果：
 - 对于10亿到150亿参数的模型，ZeRO-Offload的吞吐量最高，分别比PyTorch、ZeRO-2和Megatron高出1.33倍、1.11倍和1.64倍。**通过将所有优化器状态低开销地卸载到CPU上，ZeRO-Offload可以使用更大的微批量大小进行训练，从而获得更高的吞吐量**。<br>
 - ZeRO-2在模型大小超过80亿时会出现内存不足的情况，因为16个GPU上的聚合内存**不足以存储模型状态**。相反，ZeRO-Offload可以在没有模型并行性的情况下扩展到130亿规模，因为它将优化器状态和大部分梯度卸载到CPU内存中。<br>
 - 当与模型并行性结合时，ZeRO-Offload可以实现每个GPU超过**30TFLOPS的吞吐量**，训练高达700亿参数的模型。相比之下，Megatron仅支持最多150亿参数的模型，并在使用模型并行性时内存不足。<br>
-- 比较ZeRO-Offload与ZeRO-2和Megatron，对于10亿到80亿参数的模型，ZeRO-Offload在吞吐量上胜过ZeRO-2和Megatron。ZeRO-Offload比Megatron更快，因为**它消除了不同GPU之间的频繁通信(optimizer的通信)**，并可以使用**更大的微批量大小**进行训练。ZeRO-Offload也胜过ZeRO-2，这也归因于**更大的微批量大小**。<br>
+- 比较ZeRO-Offload与ZeRO-2和Megatron，对于10亿到80亿参数的模型，ZeRO-Offload在吞吐量上胜过ZeRO-2和Megatron。ZeRO-Offload比Megatron更快，因为**它消除了不同GPU之间的频繁通信(MP需要在optimizer的通信上通信)**，并可以使用**更大的微批量大小**进行训练。ZeRO-Offload也胜过ZeRO-2，这也归因于**更大的微批量大小**。<br>
 
+### 6.2.3 吞吐量可扩展性（Scalability）
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在图11中，我们比较了ZeRO-2和ZeRO-Offload在多达128个GPU上的吞吐量可扩展性，并得出以下关键观察结果：首先，ZeRO-Offload在聚合吞吐量（绿线）方面实现了几乎完美的线性加速，每个GPU的吞吐量超过30 TFlops（蓝色柱形图）。其次，在1到16个GPU时，ZeRO-2出现了内存不足的情况，而ZeRO-Offload可以有效地训练模型，使得模型训练从不可行变为可行。第三，在32个GPU时，ZeRO-Offload在吞吐量上略优于ZeRO-2。这种改进来自于ZeRO-Offload在GPU上的额外内存节省，它允许使用更大的批量大小来训练模型，从而提高了GPU的计算效率。第四，**在更多的GPU上（例如64和128个），ZeRO-2开始优于ZeRO-Offload**，因为两者现在可以运行相似的批量大小，从而实现相似的计算效率，而**ZeRO-2不会受到CPU-GPU通信的额外开销的影响**。总之，ZeRO-Offload为ZeRO-2提供了补充，并实现了从单个设备到数千个设备的大规模模型训练，并具有良好的计算效率。<br>
+*注释：我们没有包括与Megatron的比较，因为如图10所示，Megatron的性能始终不如ZeRO-Offload。由于模型并行性引入的通信开销，即使在线性可扩展性的情况下，扩展Megatron训练也无法实现比ZeRO-Offload更高的吞吐量。* <br>
 
+![figure11](images/zero-offload-figure11.jpg) 
 
+### 6.2.4 优化的CPU执行
+**A. CPU-Adam效率**。在这部分中，我们评估了我们在CPU上的Adam优化器实现与PyTorch Adam的性能对比。表4显示了这两种实现在参数量从10亿到100亿的模型上的优化器执行时间。与PyTorch（PT-CPU）相比，CPU-Adam将执行时间缩短了超过5倍，对于具有10亿参数的情况，缩短了6.4倍。CPU-Adam优化器通过利用指令级并行性(instruction-level parallelism)、线程级并行性(thread-level parallelism)和基于tile的数据拷贝方案(tile-based data copy
+scheme)（如算法1的第15行所示）实现了高速度提升。同时，尽管CPU-Adam在GPU上的性能比PyTorch Adam实现（PT-GPU）要慢一些，但性能差距并不是非常巨大，CPU计算不会成为训练过程中的瓶颈。<br>
+
+![figure9](images/zero-offload-figure9.jpg) 
+
+**B. 延迟参数更新（DPU）**。图9显示了启用和未启用DPU时GPT-2的训练吞吐量的比较。如图所示，在启用DPU的情况下，对于小微批量大小为8的各种模型大小，训练的吞吐量相比未启用DPU时提高了1.12到1.59倍的更新次数。这是可以预期的，因为DPU允许优化器的更新与下一次前向计算重叠，这样GPU就不必受到CPU计算和CPU-GPU通信的减速影响。但是，那么精度呢？ <br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**收敛影响**：我们研究了DPU对GPT-2和BERT的收敛影响(Convergence)。图12显示了使用PyTorch（未修改的GPT-2）进行100,000次训练迭代的预训练损失曲线，图13显示了在SQuAD上使用ZeRO-Offload进行BERT-large模型微调时，使用了无DPU的ZeRO-Offload和使用了DPU的ZeRO-Offload的损失曲线。在这两种情况下，在引入DPU之前的前40次迭代后启用DPU，以便训练在引入DPU之前的早期阶段稳定下来。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们观察到，未修改的GPT-2和无DPU的ZeRO-Offload的训练曲线完全重叠，因为无DPU的ZeRO-Offload仅执行系统优化，不改变训练动态。另一方面，**使用DPU的ZeRO-Offload的训练曲线在训练的最开始阶段（例如，在2,000到5,000次迭代中几乎看不到）收敛稍慢，但在5,000次迭代后迅速迎头赶上**。在训练的剩余部分中，训练损失与原始训练相匹配，直到模型收敛。
+
+![figure12](images/zero-offload-figure12.jpg) 
+
+![figure13](images/zero-offload-figure13.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于Bert-Large微调任务，我们可以看到尽管训练损失并不完全相同，但它们以相同的趋势收敛，并且在很大程度上重叠。在不改变任何超参数的情况下，ZeRO-Offload + DPU实现了与基准模型相同的最终F1得分（92.8）。从这些关于GPT-2预训练和Bert-Large微调的结果来看，我们经验证明DPU是一种有效的技术，可以提高ZeRO-Offload的训练吞吐量，而不会对模型的收敛性和准确性造成损害。DPU引入的一步延迟(one-step delay)在模型经过初始训练阶段后，迭代训练过程中得到了很好的容忍(tolerated)。<br>
+### 6.2.5 性能细分和分析
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了更好地理解ZeRO-Offload中卸载策略和优化技术带来的性能优势，我们评估了PyTorch、ZeRO-Offload与PT-CPU、ZeRO-Offload与CPU-Adam（简称为ZeRO-Offload）以及ZeRO-Offload与DPU的训练吞吐量。我们使用1亿参数的GPT-2模型在单个GPU上进行了各种批量大小的评估。图14显示了结果。<br>
+
+![figure14](images/zero-offload-figure14.jpg) 
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;从批量大小为1到8，PyTorch的平均性能优于使用PT-CPU的ZeRO-Offload(有通信开销)约16%。这是因为当模型可以适应GPU内存时，PyTorch不会产生任何通信开销。同时，PyTorch在GPU上采用了PyTorch GPU Adam (PT-GPU)进行优化器计算。为了减少由于CPU上的通信和优化器计算而导致的性能损失，ZeRO-Offload对CPU执行进行了优化。(1) 通过优化CPU优化器，ZeRO-Offload实现了CPU-Adam，并相比仅使用卸载策略（即ZeRO-Offload与PT-CPU）提高了最多10%的性能。(2) 当模型可以适应GPU内存时，PyTorch的性能平均比ZeRO-Offload高出8%。正如表4所示，CPU-Adam和PT-GPU之间的性能差距并不是非常大。因此，在图14中，从PyTorch到ZeRO-Offload的性能下降主要来自GPU和CPU内存之间的张量迁移开销。(3) ZeRO-Offload进一步引入了一步延迟的参数更新，将CPU上的计算与GPU上的计算重叠，相比未使用DPU的ZeRO-Offload，性能提高了7%。总之，通过利用优化的CPU执行，当ZeRO-Offload和PyTorch在相同的GPU上以相同的批量大小进行训练时，ZeRO-Offload具有与PyTorch类似的性能。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;随着批量大小的增加，在使用PyTorch进行训练时，GPU内存出现了超出限制(out-of-memory)的情况。而在ZeRO-Offload中，随着批量大小的增加，训练吞吐量也在增加。通过独特的优化卸载策略，ZeRO-Offload在使用10亿参数的单个GPU上能够达到的最大训练吞吐量上比PyTorch的性能提高了39%。<br>
+
+# 7 结论
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们介绍了ZeRO-Offload，这是一种具有高计算效率和近线性吞吐量可扩展性的强大的GPU-CPU混合DL训练技术，即使在单个GPU上，也可以让数据科学家训练具有数十亿参数的模型，而无需进行任何模型重构。我们将ZeRO-Offload作为DeepSpeed库（www.deepspeed.ai）的一部分开源，希望普及大型模型训练，让世界各地的数据科学家能够利用真正庞大的DL模型的潜力。<br>
