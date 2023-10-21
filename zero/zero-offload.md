@@ -196,6 +196,7 @@ scheme)（如算法1的第15行所示）实现了高速度提升。同时，尽�
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们观察到，未修改的GPT-2和无DPU的ZeRO-Offload的训练曲线完全重叠，因为无DPU的ZeRO-Offload仅执行系统优化，不改变训练动态。另一方面，**使用DPU的ZeRO-Offload的训练曲线在训练的最开始阶段（例如，在2,000到5,000次迭代中几乎看不到）收敛稍慢，但在5,000次迭代后迅速迎头赶上**。在训练的剩余部分中，训练损失与原始训练相匹配，直到模型收敛。
 
 ![figure12](images/zero-offload-figure12.jpg) 
+
 ![figure13](images/zero-offload-figure13.jpg) 
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于Bert-Large微调任务，我们可以看到尽管训练损失并不完全相同，但它们以相同的趋势收敛，并且在很大程度上重叠。在不改变任何超参数的情况下，ZeRO-Offload + DPU实现了与基准模型相同的最终F1得分（92.8）。从这些关于GPT-2预训练和Bert-Large微调的结果来看，我们经验证明DPU是一种有效的技术，可以提高ZeRO-Offload的训练吞吐量，而不会对模型的收敛性和准确性造成损害。DPU引入的一步延迟(one-step delay)在模型经过初始训练阶段后，迭代训练过程中得到了很好的容忍(tolerated)。<br>
