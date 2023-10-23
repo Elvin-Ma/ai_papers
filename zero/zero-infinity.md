@@ -58,7 +58,7 @@ $$2 \times bsz \times seq \times h d \times nl / ci \ldots\ldots(3)$$
 $$4 \times hd \times 4hd \ldots\ldots(4)$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;请注意，MSWM(model states working memory)(图2a的第8列)在超过1,000亿个参数时显著增长，需要多个连续内存中的多个GB，这可能导致在训练过程中由于缺乏足够的连续内存来满足这些要求而耗尽内存。3D并行性等最先进的方法通过**模型并行性**来解决这个问题，通过将单个运算符分割到多个GPU上。在第5.1.3节中，我们将讨论一种新颖的方法来解决这种大规模模型状态工作内存(working memory)的问题，而无需使用模型并行性。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**激活工作内存(AWM)** 是在执行实际的反向传播之前，用于重新计算激活的反向传播过程中所需的内存。它表示两个连续激活检查点之间的激活大小。例如，如果我们在每个Transformer块创建一个激活检查点，那么**内存大小由每个Transformer块的总激活大小决定**。这个大小以字节为单位，可以近似(approximately)表示为:
-$$bsz \times seq \times ci \times\left(16 \times hd+2 \times attn\_heads \times seq\right) \ldots\ldots(4)$$
+$$bsz \times seq \times ci \times\left(16 \times hd+2 \times attn_heads \times seq\right) \ldots\ldots(4)$$
 图2a的第8列显示，即使在𝑐𝑖 = 1的情况下，AWM在超过10万亿个参数时也会变得很大。与只包含单个参数和梯度的MSWM不同，AWM由几十个激活组成，并且只要总的AWM可以适应GPU内存，就不会因为缺乏连续内存而导致内存问题。<br>
 
 
