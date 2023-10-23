@@ -70,7 +70,7 @@ $$ \text{computed time} = \frac{\text{𝑡𝑜𝑡𝑎𝑙 𝑐𝑜𝑚𝑝𝑢�
 
 $$ 𝑎𝑖𝑡 = \frac{\text{𝑡𝑜𝑡𝑎𝑙 𝑐𝑜𝑚𝑝𝑢𝑡𝑎𝑡𝑖𝑜𝑛}}{\text{𝑡𝑜𝑡𝑎𝑙 𝑑𝑎𝑡𝑎 𝑚𝑜𝑣𝑒𝑚𝑒𝑛t}}$$
 
-$$ \text {𝑐𝑜𝑚𝑚𝑢𝑛𝑖𝑐𝑎𝑡𝑖𝑜𝑛 𝑡𝑖𝑚𝑒} = \frac{\text{𝑡𝑜𝑡𝑎𝑙 𝑑𝑎𝑡𝑎 𝑚𝑜𝑣𝑒𝑚𝑒𝑛𝑡}}{b} = \frac{\text{total computation}}{𝑎𝑖𝑡 \times 𝑏}$$
+$$ \text {𝑐𝑜𝑚𝑚𝑢𝑛𝑖𝑐𝑎𝑡𝑖𝑜𝑛 𝑡𝑖𝑚𝑒} = \frac{\text{𝑡𝑜𝑡𝑎𝑙 𝑑𝑎𝑡𝑎 𝑚𝑜𝑣𝑒𝑚𝑒𝑛𝑡}}{bw} = \frac{\text{total computation}}{𝑎𝑖𝑡 \times 𝑏w}$$
 
 $$𝑒𝑓𝑓𝑖𝑐𝑖𝑒𝑛𝑐𝑦 = \frac{\text{𝑐𝑜𝑚𝑝𝑢𝑡𝑒 𝑡𝑖𝑚𝑒}}{\text{𝑐𝑜𝑚𝑝𝑢𝑡𝑒 𝑡𝑖𝑚𝑒} + \text{𝑐𝑜𝑚𝑚𝑢𝑛𝑖𝑐𝑎𝑡𝑖𝑜𝑛 𝑡𝑖𝑚e}}$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;效率可以写成 $𝑝𝑒𝑎𝑘_{𝑡𝑝}$ 、𝑏𝑤和𝑎𝑖𝑡的函数:
