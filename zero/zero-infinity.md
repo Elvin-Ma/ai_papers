@@ -65,13 +65,7 @@ $$bsz \times seq \times ci \times\left(16 \times hd+2 \times attn-heads \times s
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;将模型状态(model states)卸载到CPU和NVMe内存的一个关键问题是它们有限的带宽是否会影响训练效率。本节将描述带宽对训练效率的影响。
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们首先定义一个效率度量指标。假设工作负载在没有任何计算和通信重叠的情况下执行，我们可以使用峰值计算吞吐量( $𝑝𝑒𝑎𝑘_{𝑡𝑝}$ )、数据移动带宽（𝑏𝑤）以及其算术强度(intensity)(𝑎𝑖𝑡)来估算训练效率。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;工作负载的算术强度（AIT）是**总计算量与计算所需数据之间的比值**。它描述了每个数据移动所需的计算量。较高的算术强度意味着对数据移动带宽的要求较低，因为对于每个加载的数据，加速器可以执行更多的计算。效率度量指标可以如下计算：
-$$computed_time = \frac {total_computation}{peak_{tp}}$$
-
-
-
-
-
-
+$$computed_time = \frac {total\_computation}{peak_{tp}}$$
 
 
 
