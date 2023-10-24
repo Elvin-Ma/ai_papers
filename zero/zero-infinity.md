@@ -77,4 +77,22 @@ $$𝑒𝑓𝑓𝑖𝑐𝑖𝑒𝑛𝑐𝑦 = \frac{\text{𝑐𝑜𝑚𝑝𝑢�
 $$𝑒𝑓𝑓𝑖𝑐𝑖𝑒𝑛𝑐𝑦 = \frac{𝑎𝑖𝑡 \times 𝑏𝑤}{𝑎𝑖𝑡 \times 𝑏𝑤 + 𝑝𝑒𝑎𝑘_{𝑡𝑝}} \ldots\ldots(6)$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们将使用这个简单的效率方程来描述训练大规模模型所需的数据移动带宽。但在此之前，我们将首先对DL训练工作负载进行𝑎𝑖𝑡的量化。<br>
 
+## 4.1 在DL训练中量化AIT
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;模型状态和激活检查点可能具有不同的𝑎𝑖𝑡(算术强度)。我们可以通过首先确定DL训练**每次迭代中的总计算量**，然后确定**每个模型状态和激活的数据移动量**来对它们进行量化。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;每次迭代的总计算量主要由Transformer的线性层计算决定。对于前向传播(forward propagation)，可以近似表示为参数数量(params)、序列长度(seq)和批大小(bsz)的函数，即2 × 𝑏𝑠𝑧 × 𝑠𝑒𝑞 × 𝑝𝑎𝑟𝑎𝑚𝑠。反向传播的计算成本大约是前向传播的**两倍**。此外，激活检查点在反向传播期间需要进行额外的重新计算，因此每次迭代的总计算量为：<br>
+
+$$computation per iter = 2 \times 4 \times bsz \times seq \times params \ldots\ldots(7)$$
+$$= 2 \times 4 \times 12 \times 𝑏𝑠𝑧 \times 𝑠𝑒𝑞 \times 𝑛𝑙 \times ℎ𝑑 \ldots\ldots(8)$$
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**关于参数和梯度的算术强度AIT** 在前向传播和反向传播过程中，模型参数必须至少加载两次，即在前向传播期间和实际的反向传播期间，从源位置加载到GPU寄存器(registers)，导致数据移动量为2×𝑝𝑎𝑟𝑎𝑚𝑒𝑡𝑒𝑟𝑠。在存在激活检查点的情况下，参数可能会额外加载一次，用于在反向传播过程中进行重新计算(re-computation)，增加了另外的1×𝑝𝑎𝑟𝑎𝑚𝑒𝑡𝑒𝑟𝑠的数据移动量。此外，梯度必须至少从GPU寄存器存储到最终位置一次，增加了1×𝑝𝑎𝑟𝑎𝑚𝑒𝑡𝑒𝑟𝑠的数据移动量。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;因此，假设参数和梯度存储在相同的最终位置上，前向传播和反向传播期间的总数据移动量将为4×𝑝𝑎𝑟𝑎𝑚𝑒𝑡𝑒𝑟𝑠，即2×4×𝑝𝑎𝑟𝑎𝑚𝑒𝑡𝑒𝑟𝑠字节(bf16)。每次迭代的总计算量由第4.1节(上述)给出。因此，相对于(w.r.t --> with respect to)参数和梯度的𝑎𝑖𝑡为：<br>
+
+$$𝑠𝑒𝑞 \times bsz \ldots\ldots(9)$$
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**关于优化器状态的算术强度(AIT)** 在优化器步骤中，优化器状态必须至少被读取一次，并且优化器状态必须至少被写入一次。因此，总的数据移动量为2×𝑜𝑝𝑡𝑖𝑚𝑖𝑧𝑒𝑟_𝑠𝑡𝑎𝑡𝑒𝑠，大约为2×16×𝑝𝑎𝑟𝑎𝑚𝑒𝑡𝑒𝑟𝑠字节。每次迭代的总计算量由第4.1节给出。因此，在完整的训练迭代过程中，相对于优化器状态的𝑎𝑖𝑡为：
+
+$$ 𝑠𝑒𝑞 \times bsz / 4 \ldots\ldots(10)$$
+
+
+
 
