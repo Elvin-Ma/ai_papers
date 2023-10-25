@@ -109,3 +109,22 @@ $$ 24 \times hd \times ci ldots\ldots(11)$$
 *请注意，𝑝𝑒𝑎𝑘_{𝑡𝑝} 并不是理论硬件峰值，而是在没有任何通信瓶颈的情况下可以实现的峰值性能。* <br>
 *另请注意，最终结果结果将根据所使用的𝑝𝑒𝑎𝑘_𝑡𝑝值而有所不同，而此分析只是一个数据点，旨在指导我们特定在NVIDIA V100 DGX-2集群上理解DL工作负载的效率和带宽之间的关系。此外，该结果仅考虑了模型状态和激活之间的效率和带宽关系，一次只考虑一个状态，假设其他状态具有无限带宽，以分离出每个状态的带宽需求。* <br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**关于参数(with respect to)和梯度的带宽**，图3a显示，即使在最小的批量大小情况下，如果参数和梯度的带宽超过70 GB/s，我们可以实现**超过50%的效率**。在这个带宽下，理论上**可以完全重叠数据传输和计算**，以达到100%的效率。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**关于优化器状态的带宽**，图3b显示，**为了实现50%的效率**，优化器状态需要近**4倍**的更高带宽，相比之下，参数和梯度的带宽要求较低。此外，优化器状态在前向和反向传播的结束时进行更新，**无法与计算重叠**。因此，为了保持整体DL工作负载的高效性，它们需要更大的带宽。例如，要实现每个GPU的批量大小为2的90%效率，需要近1.5 TB/s的有效带宽，这甚至超过了GPU的内存带宽。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**关于激活内存的带宽**，图3c还显示，启用激活检查点的情况下，仅仅2 GB/s的带宽就能够维持超过50%的效率，即使hidden size为2K。一旦隐藏大小超过8K，带宽需求降低到不到1 GB/s。<br>
+
+# 5 ZERO-INFINITY设计概述
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们将介绍ZeRO-Infinity的设计选择概述，这些选择使其能够实现前所未有的模型规模，并提供出色的训练效率和易用性。ZeRO-Infinity的整体设计如图4所示，并在下文中进行讨论。<br>
+
+![figure4](images/zero-infinity-figure4.jpg)
+
+## 5.1 前所未有规模的设计
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;现代GPU集群在存储器方面具有高度异构性(heterogeneous)。除了GPU内存外，它们还具有CPU内存以及比GPU内存大50倍、比CPU内存大近20倍的大规模NVMe存储器（参见图2b）。
+*注释：NVMe（Non-Volatile Memory Express）是一种高性能、低延迟的存储器接口协议，专为固态硬盘（SSD）和闪存存储器设计*
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们开发了ZeRO-Infinity，这是一个用于DL训练的并行系统，通过利用现代GPU集群中的异构内存系统，可以突破GPU内存的限制。图1比较了3D并行性和ZeRO-Infinity所能实现的最大模型大小。ZeRO-Infinity在每个NVIDIA V100 DGX-2节点上支持万亿个参数，**比3D并行性增加了50倍**。<br>
+
+![figure1](images/zero-infinity-figure1.jpg)
+
+### 5.1.1 模型状态的无限卸载引擎。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Infinity是在ZeRO-3 [11] 的基础上构建的，它将所有模型状态进行分区，以消除内存冗余，如2节所述。与现有的任何ZeRO技术系列不同，ZeRO-Infinity设计了一个强大的卸载机制，称为无限卸载引擎，可以根据内存需求将所有分区的模型状态卸载到CPU或NVMe内存，或者保留在GPU上。请注意从图2a和图2b可以看出，即使是一个拥有100万亿参数的模型所需的模型状态，也可以适应DGX-2集群（1536个GPU，96个节点）的总体NVMe内存。因此，无限卸载引擎使得ZeRO-Infinity可以适应具有数万亿参数的模型的模型状态。有关更多详细信息，请参阅第6节。
+
