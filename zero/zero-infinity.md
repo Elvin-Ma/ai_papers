@@ -132,6 +132,9 @@ $$ 24 \times hd \times ci ldots\ldots(11)$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;除了模型状态之外，ZeRO-Infinity还可以在必要时将激活内存卸载到CPU内存中。需要注意的是，一个拥有1万亿参数的模型所需的激活**检查点(0.76 TB)** 可以轻松适应DGX-2系统上可用的1.5TB CPU内存，而一个拥有100万亿参数的模型所需的3 TB激活检查点也可以适应下一代硬件的CPU内存。因此，通过将激活检查点卸载到CPU内存，ZeRO-Infinity可以适应具有数万亿参数的模型的激活检查点。<br>
 ### 5.1.3 工作内存的以内存中心切片技术
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了减少大型模型的DL训练对工作内存的需求，ZeRO-Infinity引入了一种称为内存为中心的切片技术的新技术，该技术利用了ZeRO-3的数据获取和释放模式，通过**将大型运算符分解为可以按顺序执行的较小切片来减少工作内存的需求**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;例如，为了减少大型线性运算符(linear 算子)的工作内存，ZeRO-Infinity将该运算符表示为数学上等价的由原始运算符的参数切片组成的较小线性运算符序列，并按顺序执行它们。结合ZeRO-3使用时，每个切片的参数和梯度可以逐个获取和释放，从而将工作内存减少与切片数量成比例的量。因此，ZeRO-Infinity可以支持任意大小的运算符，而无需依赖模型并行性将其适应于有限的GPU内存中。<br>
 
-
+## 5.2 优秀的训练效率设计
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 将所有模型状态和激活内存卸载到CPU或NVMe只有在ZeRO-Infinity能够**在卸载的情况下实现高效率**才是切实可行的。实际上，这是非常具有挑战性的，因为CPU内存的带宽比GPU内存慢一个数量级，而NVMe带宽比CPU内存带宽慢一个数量级。此外，从GPU读取和写入这些内存的速度更慢（参见图2b）。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在像DGX-2这样的系统上，根据我们在第4节的分析，为了实现高效的DL训练，参数和梯度、优化器状态以及激活检查点的带宽必须分别大于70GB/s、1.5TB/s和1-4GB/s。下面我们将讨论ZeRO-Infinity如何实现所需的带宽以达到优秀的效率。<br>
 
