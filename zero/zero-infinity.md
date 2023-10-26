@@ -125,6 +125,13 @@ $$ 24 \times hd \times ci ldots\ldots(11)$$
 
 ![figure1](images/zero-infinity-figure1.jpg)
 
-### 5.1.1 模型状态的无限卸载引擎。
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Infinity是在ZeRO-3 [11] 的基础上构建的，它将所有模型状态进行分区，以消除内存冗余，如2节所述。与现有的任何ZeRO技术系列不同，ZeRO-Infinity设计了一个强大的卸载机制，称为无限卸载引擎，可以根据内存需求将所有分区的模型状态卸载到CPU或NVMe内存，或者保留在GPU上。请注意从图2a和图2b可以看出，即使是一个拥有100万亿参数的模型所需的模型状态，也可以适应DGX-2集群（1536个GPU，96个节点）的总体NVMe内存。因此，无限卸载引擎使得ZeRO-Infinity可以适应具有数万亿参数的模型的模型状态。有关更多详细信息，请参阅第6节。
+### 5.1.1 模型状态的无限卸载引擎(Infinity offload engine for model states)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Infinity是在ZeRO-3 [11] 的基础上构建的，它将所有模型状态进行分区，以消除内存冗余，如2节所述。与现有的任何ZeRO技术系列不同，ZeRO-Infinity设计了一个强大的卸载机制，称为无限卸载引擎，可以根据内存需求将所有分区的模型状态卸载到CPU或NVMe内存，或者保留在GPU上。请注意从图2a和图2b可以看出，即使是一个拥有100万亿参数的模型所需的模型状态，也可以适应DGX-2集群（1536个GPU，96个节点）的总体NVMe内存。因此，无限卸载引擎使得ZeRO-Infinity可以适应具有数万亿参数的模型的模型状态。有关更多详细信息，请参阅第6节。<br>
+
+### 5.1.2 激活的CPU卸载
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;除了模型状态之外，ZeRO-Infinity还可以在必要时将激活内存卸载到CPU内存中。需要注意的是，一个拥有1万亿参数的模型所需的激活**检查点(0.76 TB)** 可以轻松适应DGX-2系统上可用的1.5TB CPU内存，而一个拥有100万亿参数的模型所需的3 TB激活检查点也可以适应下一代硬件的CPU内存。因此，通过将激活检查点卸载到CPU内存，ZeRO-Infinity可以适应具有数万亿参数的模型的激活检查点。<br>
+### 5.1.3 工作内存的以内存中心切片技术
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了减少大型模型的DL训练对工作内存的需求，ZeRO-Infinity引入了一种称为内存为中心的切片技术的新技术，该技术利用了ZeRO-3的数据获取和释放模式，通过**将大型运算符分解为可以按顺序执行的较小切片来减少工作内存的需求**。<br>
+
+
 
