@@ -131,10 +131,40 @@ $$ 24 \times hd \times ci ldots\ldots(11)$$
 ### 5.1.2 激活的CPU卸载
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;除了模型状态之外，ZeRO-Infinity还可以在必要时将激活内存卸载到CPU内存中。需要注意的是，一个拥有1万亿参数的模型所需的激活**检查点(0.76 TB)** 可以轻松适应DGX-2系统上可用的1.5TB CPU内存，而一个拥有100万亿参数的模型所需的3 TB激活检查点也可以适应下一代硬件的CPU内存。因此，通过将激活检查点卸载到CPU内存，ZeRO-Infinity可以适应具有数万亿参数的模型的激活检查点。<br>
 ### 5.1.3 工作内存的以内存中心切片技术
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了减少大型模型的DL训练对工作内存的需求，ZeRO-Infinity引入了一种称为内存为中心的切片技术的新技术，该技术利用了ZeRO-3的数据获取和释放模式，通过**将大型运算符分解为可以按顺序执行的较小切片来减少工作内存的需求**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了减少大型模型的DL训练对工作内存的需求，ZeRO-Infinity引入了一种称为内存中心切片的新技术，该技术利用了ZeRO-3的数据获取和释放模式，通过**将大型运算符分解为可以按顺序执行的较小切片来减少工作内存的需求**。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;例如，为了减少大型线性运算符(linear 算子)的工作内存，ZeRO-Infinity将该运算符表示为数学上等价的由原始运算符的参数切片组成的较小线性运算符序列，并按顺序执行它们。结合ZeRO-3使用时，每个切片的参数和梯度可以逐个获取和释放，从而将工作内存减少与切片数量成比例的量。因此，ZeRO-Infinity可以支持任意大小的运算符，而无需依赖模型并行性将其适应于有限的GPU内存中。<br>
 
 ## 5.2 优秀的训练效率设计
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 将所有模型状态和激活内存卸载到CPU或NVMe只有在ZeRO-Infinity能够**在卸载的情况下实现高效率**才是切实可行的。实际上，这是非常具有挑战性的，因为CPU内存的带宽比GPU内存慢一个数量级，而NVMe带宽比CPU内存带宽慢一个数量级。此外，从GPU读取和写入这些内存的速度更慢（参见图2b）。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在像DGX-2这样的系统上，根据我们在第4节的分析，为了实现高效的DL训练，参数和梯度、优化器状态以及激活检查点的带宽必须分别大于70GB/s、1.5TB/s和1-4GB/s。下面我们将讨论ZeRO-Infinity如何实现所需的带宽以达到优秀的效率。<br>
+### 5.2.1 关于参数和梯度的效率
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;参数和梯度的数据传输带宽必须大于**70GB/s**，接近DGX-2集群上可用的GPU-GPU带宽[40]。因此，像ZeRO3 [11]这样的深度学习并行训练解决方案，在正向或反向传播之前将参数从拥有者GPU广播到其他GPU，**只要通信重叠**，就可以高效运行。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;相反，单个GPU到CPU内存或NVMe之间微弱的12GB/s的PCIe带宽（见图2b）或反之(CPU 到 GPU)，根本无法支持大规模异构训练。因此，现有的异构解决方案(如ZeRO-Offload)要求在广播之前必须先将参数从CPU移动到拥有者GPU，这就需要每个GPU非常大的批量大小才能达到足够的活跃度以在有限的带宽下实现高效。这带来了两个问题：i)对于庞大的模型，激活内存的大小甚至超过CPU内存的容量；ii)当扩展到数百或数千个GPU进行有效收敛时，有效批量大小变得过大。<br>
+*(注释：CPU和NVMe的带宽分别约为100GB/s和25GB/s，但从CPU或NVMe读取数据到单个GPU的速度受限于可实现的PCIe带宽，大约在10-12GB/s左右。)* <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Infinity通过两种方式解决了这些挑战：**i)带宽为中心的分区**：一种新颖的数据映射和并行数据检索策略，用于被卸载的参数和梯度，使得ZeRO-Infinity能够实现几乎无限的异构内存带宽（详见第6.1节），**ii)基于重叠的设计**: 使得ZeRO-Infinity不仅可以将GPU之间的通信与计算重叠，而且还可以**通过PCIe重叠NVMe-CPU和CPU-GPU之间的通信**（详见第5.1.3节）。<br>
+### 5.2.2 关于优化器状态的效率
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;与在正向和反向传播过程中按顺序使用和生成的参数和梯度不同，优化器状态可以同时并行更新。这个特性被ZeRO-3和ZeRO-Offload所利用，它们分别将优化器状态存储和更新在GPU(存储)和CPU(更新)内存中，并且**跨所有可用的GPU和CPU同时进行**。因此，随着GPU或CPU数量的增加，聚合的GPU或CPU内存带宽**可以远远高于所需的1.5TB/s**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于ZeRO-Infinity是基于ZeRO-3构建的，它也可以利用聚合的GPU和CPU内存带宽以及聚合的CPU计算资源来进行优化器步骤，当将优化器状态卸载到CPU内存时。然而，通过NVMe卸载，**需要将数据以适合CPU内存的块大小从NVMe传输到CPU内存**，并**逐块**进行优化器步骤。因此，优化器步骤(optimizer step)**受限于NVMe-CPU内存带宽**：虽然ZeRO-Infinity可以实现跨多个节点的聚合NVMe带宽，但关键是要实现每个节点接近峰值的NVMe带宽，以支持超过1.5TB/s的必要带宽，并且**使用尽可能少的节点和尽可能小的批量大小**。此外，将数据从NVMe传输到CPU内存，或从CPU内存传输到GPU内存的过程可能导致GPU和CPU内存的碎片化，即使仍有大量内存可用，也可能导致内存不足。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**无限卸载引擎(Infinity offload engine)** 不仅可以实现接近峰值的NVMe带宽，还可以允许ZeRO-Infinity将NVMe到CPU的读取与CPU到NVMe的写入以及优化器步骤的**CPU计算**同时重叠进行，从而使得ZeRO-Infinity在少量GPU上使用适度的批量大小时保持高效，在大量GPU上使用小批量大小时也能高效运行。同时，它通过仔细重用(内存池)用于数据传输的临时缓冲区来最小化内存碎片化。我们在第6节详细讨论了Infinity offload engine的优化措施。<br>
+### 5.2.3 关于激活的效率
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在DGX-2节点上，**每个GPU可以以大约3GB/s的速度通过PCIe并行读写数据到CPU内存**，这使得可以将激活检查点卸载到CPU内存，同时对于大于8K或更大的隐藏大小仍保持超过80%的效率。为了在较小的隐藏大小下也能保持高效率，ZeRO-Infinity可以降低激活检查点的频率，并且**有效地将激活检查点的通信与GPU上的正向和反向计算重叠进行**，包括与CPU内存之间的通信。<br>
+
+## 5.3 便于使用的设计
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;使用ZeRO-Infinity，数据科学家不再需要将他们的模型适应多种形式的并行性，比如3D并行。这是因为ZeRO-Infinity中的以**内存为中心的切片设计**(在第5.1.3节中讨论)旨在降低大型单个层所需的GPU内存，否则需要使用模型并行（张量切片）来适应GPU内存中的层。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;此外，ZeRO-Infinity在PyTorch中的实现方式消除了在扩展到数万亿个参数时需要手动重构模型代码的需求。这是通过两个自动化功能实现的：<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;i)在训练期间，在参数被使用之前和之后，自动进行数据移动来收集和分区(partition)参数。ZeRO-Infinity通过向PyTorch子模块(submodule)注入&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;i)pre forward/backward钩子来触发allgather集合操作，以在前向/反向传递之前收集所需的参数，以及ii）post forward/backward 钩子来触发参数/梯度分区，并可选择将它们卸载到CPU或NVMe（详见第7.1节）。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ii)在初始化期间自动进行模型分区，以便不能适应单个GPU或CPU内存的模型仍然可以进行初始化，而无需手动将模型分区到数据并行进程中。ZeRO-Infinity通过包装(wrapping)所有模块类的构造函数来实现这一点，以便在初始化过程中创建每个子模块的参数后**立即对其进行分区和卸载**。整个模型不会完全实例化在单个数据并行进程上（详见第7.2节）。<br>
+
+# 6 效率优化
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们深入探讨了在第5节中介绍的优化措施，这些措施使得ZeRO-Infinity能够实现出色的效率。<br>
+
+## 6.1 带宽为中心的分区
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Infinity实现了一种新颖的数据映射和检索策略，以解决NVMe和CPU内存带宽的限制。与ZeRO [11]和ZeRO-Offload [12]不同，这两种方法中每个层的参数由单个数据并行进程拥有，并在需要时向其他进程广播，ZeRO-Infinity将各个参数分区到所有数据并行进程，并在需要访问参数时**使用allgather而不是广播**。需要注意的是，无论是广播还是allgather通信收集，如果数据位于GPU上，其通信成本是相同的。因此，在仅使用GPU进行训练时，这没有区别。然而，当数据位于NVMe或CPU上时，这将产生重大影响。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在基于广播的方法中，由于每个参数完全由一个数据并行进程拥有，参数**必须首先通过PCIe从其源位置传输到GPU内存**，然后才能进行广播。需要注意的是，这个过程只有一个PCIe可以活动，而连接到其他所有GPU的所有PCIe链路都处于空闲状态。相反，在ZeRO-Infinity中，**通过分区参数和基于allgather的方法，所有PCIe链路都可以并行活动**，每个链路带来参数的 $1/𝑑𝑝_{𝑡ℎ}$ 部分，其中𝑑𝑝是数据并行度。因此，NVMe或CPU与GPU之间的有效通信带宽随着𝑑𝑝的增加呈线性增长。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;例如，使用基于广播的方法，在DGX-2盒子上进行16路数据并行时，CPU/NVMe到GPU的带宽保持在大约**12GB/s**（使用PCIe Gen 3）。然而，使用基于allgather的方法，有效可达到的带宽分别增加到约**48/25GB/s**（每个GPU为3.0/1.6GB/s）（参见图2b），仅受限于每个DGX-2节点的最大聚合PCIe带宽和最大NVMe带宽。从这里开始，带宽随着节点数量的增加呈线性增长。当在大规模进行大型模型的训练时，ZeRO-Infinity可以提供比训练所需的更多异构内存带宽（几乎无限）。例如，在64个DGX-2节点上，ZeRO-Infinity可以获得超过**3TB/s的CPU内存带宽**和超过**1.5TB/s的NVMe带宽**。<br>
+
+# 6.2 重叠中心的设计
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;虽然ZeRO-Infinity可以在多节点设置中利用足够的异构内存带宽，但在单个GPU或单个节点设置中，带宽仍然可能成为瓶颈。即使是GPU-GPU的allgather通信，在使用小批量大小时也会对效率产生很大影响（图3）。此外，访问NVMe内存需要一个三步过程：i)从**NVMe读取数据到CPU内存**（nc-transfer），ii)将数据从**CPU内存复制到GPU内存**(cg-transfer)，iii)**执行allgather以在所有GPU上构建完整的参数**（gg-transfer）。这些数据移动的顺序性意味着，如果简单地进行，总通信时间将是这三个数据移动成本的总和，即使每个阶段的数据移动带宽单独足够，也会导致效率低下。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了解决这些问题，ZeRO-Infinity拥有一个重叠引擎，它不仅可以将GPU-GPU通信与GPU计算重叠，还可以同时重叠NVMe到CPU和CPU到GPU的通信。重叠引擎包括两个组件：i）一个动态预取器，用于在前向或反向传递中消耗参数之前重叠重构参数所需的数据移动；ii）一个通信和卸载重叠机制，用于并行执行梯度所需的数据移动和反向计算。<br>
+
 
