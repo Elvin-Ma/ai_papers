@@ -191,4 +191,60 @@ $$ 24 \times hd \times ci ldots\ldots(11)$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了改善用户体验，我们还提供了机制来检测这些情况并自动注册外部参数，这样用户就不需要进行任何代码更改：<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**拦截(Intercepting)分区参数访问** PyTorch模块将其张量参数存储在哈希表中。在初始化时，我们用一个子类化的类型替换哈希表，并覆盖张量访问操作。当访问一个分区参数时，我们对该参数执行阻塞的allgather操作，将其注册为外部参数，然后返回收集到的参数。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**激活函数内省** 一个子模块可能会在其前向传递中返回一个参数，供另一个子模块的前向传递和反向传递使用。例如，Megatron-LM在线性层的前向传递中返回偏置向量，并由父级Transformer层模块使用。我们检查每个子模块的前向传递返回的激活输出，查找分区参数。如果发现一个分区参数，我们会收集并注册它作为外部参数。<br>
+## 7.2 初始化期间的自动模型分区
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如果模型很大，使用传统的数据并行方法在ZeRO-Infinity进行分区之前可能无法完全初始化模型，即在每个数据并行进程上复制模型。例如，一个5000亿参数的模型在半精度下将占用1TB的内存，因此一个每个节点有8个GPU的系统仅用于初始数据并行分配步骤就需要8TB的总CPU或GPU内存。这超出了节点上可用的GPU或CPU内存。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了解决这个限制，必须**在初始化时**对模型的每一层参数进行分区，而不是在整个模型初始化完成后再进行分区。为了实现这一点，我们提供了一个Python的ZeRO-Infinity上下文(context)，它修饰(decorates)了torch.nn.Module的__init__方法，这样在每个模块/子模块的初始化之后，分配在该模块/子模块下的参数会立即在数据并行进程组中进行分区。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;因此，在进行分区之前，只有各个子模块被完全初始化，而整个模型永远不会在所有数据并行进程上进行复制。在上述示例中，这个拥有5000亿参数的模型因此可以在初始化过程中完全分区，只需要**1TB的总CPU内存**，无论数据并行进程的总数是多少。<br>
 
+# 8 评估
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;本节评估了ZeRO-Infinity，展示了它在具有数万亿参数的模型上实现了出色的训练效率和可扩展性。我们还展示了ZeRO-Infinity中各种技术对模型规模和性能的影响。<br>
+## 8.1 方法论
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**硬件**。我们在一台由512个V100 SXM3 32 GB GPU(32个DGX-2节点-每节点16个GPUs)组成的集群上进行了实验，**节点间通信带宽为800 Gbps**。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**基准线**。对于没有模型并行性(mp)的实验，我们使用torch的分布式数据并行(DDP [42])作为基准线。对于具有模型并行性的实验，我们使用Megatron-LM [7]。对于每个实验，我们使用3D并行性 [13]、ZeRO [11]或ZeRO-Offload [12]中的相关最先进方法作为基准线(baseline)。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**模型配置**。我们使用基于GPT的Transformer模型。我们将序列长度固定为1024，并根据隐藏维度和层数的不同来获得具有不同参数数量的模型。表格1提供了我们在整个评估过程中使用的具体模型配置。附录A中提供了其他配置的详细信息。
+
+![table1](images/zero-infinity-table1.jpg)
+
+## 8.2 模型规模和速度
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**模型规模**：ZeRO-Infinity可以训练具有超过32万亿参数的模型，而3D并行性的参数规模约为6500亿，这是目前的最先进水平，ZeRO-Infinity的模型规模比3D并行性提升了50倍（图1）。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**模型速度**：图5a展示了ZeRO-Infinity在**512个GPU**上训练高达20万亿参数模型的性能。对于5000亿参数的模型（接近3D并行性在这些资源上可以运行的最大规模），ZeRO-Infinity和3D并行性的吞吐量几乎相同，**表明ZeRO-Infinity的训练效率与最先进方法相当**。当进一步增加模型规模时，3D并行性会因为内存不足而无法继续运行，而ZeRO-Infinity可以训练高达20万亿参数（比之前大40倍）的模型，并且具有高达**49 TFlops/GPU**的出色吞吐量。在极端规模下，图5a展示了性能从10万亿参数（43 TFlops/GPU）降至20万亿参数（34 TFlops/GPU）的下降。这种下降不是由于NVMe带宽引起的，因为这两种模型尺寸都使用了NVMe卸载，而是由于每个GPU的批量大小非常小（表格1），这是**由于有限的CPU内存存储激活检查点所导致的**。这个问题可以通过增加CPU内存或在未来的实现中将激活检查点卸载到NVMe上来改善。<br>
+## 8.3 超线性可扩展性
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;图5b展示了当训练一个1万亿参数的模型时，ZeRO-Infinity从4个节点（64个GPU）到32个节点（512个GPU）实现了超线性的可扩展性。这是一种弱可扩展性的结果，我们保持每个节点的批量大小不变，并随着节点数量的增加增加总批量大小。ZeRO-Infinity通过有效**利用聚合PCIe和NVMe带宽的线性增加**来加速参数和优化器状态的卸载，并利用额外节点的CPU计算进行参数更新，超过了完美的线性扩展。此外，ZeRO-Infinity仅使用4个节点就已经实现了超过2.8 petaflops（44 Tflops/GPU）的性能，这表明即使在适度规模下，聚合的NVMe带宽已足够实现良好的效率。<br>
+## 8.4 大规模模型训练的民主化
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;图5c展示了在单个节点（16个GPU）上使用ZeRO-Infinity在没有任何模型并行性的情况下训练10亿至1万亿参数的模型的性能。对于高达1000亿参数的模型，ZeRO-Infinity实现了超过40 TFlops/GPU的出色性能，使得只使用一个DGX-2机箱就可以对GPT-3等模型进行**微调**成为可能。相比之下，**3D并行性无法扩展到超过200亿参数的模型**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这些结果展示了ZeRO-Infinity的两个方面：i）在单个NVIDIA DGX-2节点上，可以轻松对具有高达1万亿参数的大模型进行微调，使得那些没有大型GPU集群的用户也能够使用。ii）易用性：使用ZeRO-Infinity可以训练这种规模的模型，无需结合模型并行性或流水线并行性，也无需对模型代码进行改写，使得数据科学家能够轻松地扩大他们的模型规模。<br>
+
+![figure6](images/zero-infinity-figure6.jpg)
+
+![table2](images/zero-infinity-table2.jpg)
+
+## 8.5 系统特性对模型规模的影响
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们展示了不同设备放置策略对模型规模的影响，以及内存中心平铺（Sec. 5.1.3）对使用单个DGX-2系统（16个GPU）的最大隐藏层大小的影响。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**最大模型规模** 图6a展示了不同设备放置和划分策略（参见表2）对最大模型规模的影响。仅使用数据并行性时，由于GPU内存受限和模型状态冗余，我们只能达到14亿参数的规模。当我们引入ZeRO-2和ZeRO-Offload的优化器/梯度划分和CPU卸载时，我们能够在单个节点上将模型规模扩大9倍，达到130亿参数。在ZeRO-Infinity中，将参数状态划分和卸载到CPU，使我们几乎达到1000亿参数。然而，**最终的规模跃升是通过将模型状态卸载到NVMe来实现的**，最终达到1万亿参数的规模，相对于仅使用数据并行性，模型规模增加了700倍。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**最大隐藏层大小** 我们评估了内存中心平铺在存在内存碎片化的情况下实现大隐藏层大小(large hidden sizes)的影响。我们使用不同的隐藏层大小和平铺因子训练单层Transformer模型，以确定可以使用和不使用平铺训练的最大隐藏层大小。为了保持所有实验中的内存碎片一致，我们将总GPU内存预先划分为2GB的连续块，以便所有大于2GB的内存分配请求都会失败。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;图6b显示，**不使用内存中心平铺时可以训练的最大隐藏层大小为8K**，而使用平铺因子为16的内存中心平铺甚至可以训练具有64K的庞大隐藏层大小。通过内存中心平铺，ZeRO-Infinity通过避免对模型并行性的需求，极大地简化了DL系统堆栈，使数据科学家能够轻松地使用大隐藏层大小进行训练。<br>
+
+# 8.6 系统特性对性能的影响
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们评估了无限卸载引擎（Sec. 5）、带宽中心划分（Sec. 6.1）、重叠中心设计（Sec. 6.2）和激活检查点卸载（Sec. 4.1）对训练速度的影响。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**ZeRO-Infinity与ZeRO-Offload的比较** 图6c展示了在一个具有8B参数的模型的反向传播时间上，使用ZeRO-Infinity与ZeRO-Offload将梯度卸载到CPU内存的影响。ZeRO-Infinity利用跨多个GPU的总PCIe带宽来卸载梯度，相对于受限于单个PCIe带宽的ZeRO-Offload，可以在64个GPU上实现近2倍的加速。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**预取和重叠** 图6d展示了在一个具有8B参数的模型和64个GPU的情况下，打开和关闭通信重叠和预取时的相对吞吐量差异。图中显示，对于每个GPU的小批量大小，预取和重叠对于实现良好的性能至关重要，而在大批量大小时，其影响逐渐减弱。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**激活检查点卸载** 图6e显示了在ZeRO-Infinity中将激活检查点卸载到CPU内存时，对训练吞吐量的影响。对于小的隐藏层大小，激活检查点的CPU卸载可以将训练吞吐量**降低**最多1.2倍，但对于32K和64K的隐藏层大小，影响很小，这表明可以在不影响大的隐藏层大小的效率的情况下将激活检查点卸载到CPU内存中。<br>
+
+# 9 结论与未来影响
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本文中，我们提出了ZeRO-Infinity，这是一种新颖的异构系统技术，利用GPU、CPU和NVMe存储器，实现了前所未有的模型规模，同时保持了优秀的效率，且易于使用。它对于我们如何考虑大型模型训练的内存提供了一种范式转变。不再需要将DL训练适配到速度极快但昂贵且有限的HBM2等内存中。ZeRO-Infinity证明，通过在多个设备上并行利用廉价且较慢但容量巨大的CPU或NVMe存储器，可以超越GPU内存瓶颈，实现对当前一代GPU集群进行高效训练所需的聚合带宽。<br>
+
+![table3](images/zero-infinity-table3.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;展望未来，GPU和其他加速器的性能将变得更加强大，而对于高效训练所需的聚合带宽也将增加。表3显示，即使与NVIDIA V100 GPU相比，加速器(accelerators)的计算能力增加了10倍，在一个拥有512个加速器的集群中，ZeRO-Infinity只需要每个加速器和慢速内存之间的30GB/s带宽，就能保持高效性。实际上，通过使用当前的技术，通过NVLink [43]将加速器连接到慢速内存已经是可能的。例如，2018年推出的Summit超级计算机[44]每个GPU将NVIDIA V100 GPU与CPU内存连接速度达到40GB/s。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通过ZeRO-Infinity，加速器设备的内存已经不再是模型规模或训练效率的限制因素。然而，要在合理的时间内训练具有数万亿或数百万亿参数的模型仍然需要计算能力的巨大飞跃，并且要在未来的设备上高效运行，需要相应提升的设备间带宽（表3）。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们希望，随着设备内存不再是限制因素，ZeRO-Infinity将激发未来更多关注计算能力和设备间带宽的创新，以支持模型规模的1000倍增长和相关的进步。这将推动未来超强加速器设备和超级计算集群的发展，为深度学习模型的发展和创新提供支持。<br>
+
+![table4](images/zero-infinity-table4.jpg)
+
+![table5](images/zero-infinity-table5.jpg)
+
+![table6](images/zero-infinity-table6.jpg)
+
+![table7](images/zero-infinity-table7.jpg)
+
+![table8](images/zero-infinity-table8.jpg)
