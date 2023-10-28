@@ -166,5 +166,29 @@ $$ 24 \times hd \times ci ldots\ldots(11)$$
 # 6.2 重叠中心的设计
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;虽然ZeRO-Infinity可以在多节点设置中利用足够的异构内存带宽，但在单个GPU或单个节点设置中，带宽仍然可能成为瓶颈。即使是GPU-GPU的allgather通信，在使用小批量大小时也会对效率产生很大影响（图3）。此外，访问NVMe内存需要一个三步过程：i)从**NVMe读取数据到CPU内存**（nc-transfer），ii)将数据从**CPU内存复制到GPU内存**(cg-transfer)，iii)**执行allgather以在所有GPU上构建完整的参数**（gg-transfer）。这些数据移动的顺序性意味着，如果简单地进行，总通信时间将是这三个数据移动成本的总和，即使每个阶段的数据移动带宽单独足够，也会导致效率低下。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了解决这些问题，ZeRO-Infinity拥有一个重叠引擎，它不仅可以将GPU-GPU通信与GPU计算重叠，还可以同时重叠NVMe到CPU和CPU到GPU的通信。重叠引擎包括两个组件：i）一个动态预取器，用于在前向或反向传递中消耗参数之前重叠重构参数所需的数据移动；ii）一个通信和卸载重叠机制，用于并行执行梯度所需的数据移动和反向计算。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在ZeRO-Infinity中，动态预取器(dynamic prefetcher)会即时跟踪前向和反向计算过程，并构建每次迭代的操作符序列的内部映射。在每次迭代中，预取器会**记录**当前所处的**操作符序列位置**，**并预取**未来操作符所需的参数。预取器(prefetcher)了解三步通信过程，因此可以将一个参数的nc-transfer与其他参数的cg-transfer和gg-transfer重叠。例如，在执行第𝑖个操作符之前，预取器可以为第𝑖+3、𝑖+2和𝑖+1个操作符所需的参数分别调用nc、cg和gg-transfer。需要注意的是，所有这些数据移动可以与执行第𝑖个操作符并行进行。此外，ZeRO-Infinity可以在动态工作流的情况下**更新操作符序列映射**，以便在迭代过程中根据前向和反向传播的变化进行适当的预取.<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;类似地，在反向传递中，ZeRO-Infinity可以将第𝑖+1个操作符的参数梯度的reduce-scatter与第𝑖个操作符的计算(computation)重叠，同时将第 𝑖+2个操作符的梯度的reduce-scatter分区梯度传输到CPU或NVMe。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;借助这种强大的以重叠为中心的设计，即使在使用少量GPU和每个GPU的小批量大小进行训练时，ZeRO-Infinity也可以隐藏大部分数据移动的时间。<br>
+*(https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html)* <br>
 
+## 6.3 无限卸载引擎
+无限卸载引擎由两个主要组件组成：<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**DeepNVMe** : 一个Infinity Offload引擎中的强大C++ NVMe读写库，DeepNVMe支持异步完成批量读写请求，并支持显式同步请求以刷新正在进行的读写操作。异步支持使得ZeRO-Infinity能够将这些请求**与GPU/GPU或GPU/CPU通信或计算重叠**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;最重要的是，DeepNVMe能够在NVMe存储设备上实现接近峰值的顺序读写带宽。它通过一系列优化措施实现高性能，包括对I/O请求的积极并行化（无论是来自单个用户线程还是跨多个用户线程）、智能工作调度、避免数据复制和内存固定等。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**固定(pinned)内存管理层**为了确保从（到）NVMe/CPU存储的张量高性能读取（或写入），源（或目标）张量必须位于**固定内存缓冲区**中。然而，固定内存缓冲区是稀缺的系统资源，单个进程过度使用会降低整体系统性能或导致系统不稳定。该层通过重复使用少量（数十GB）固定内存来管理有限的固定内存供应，以将整个模型状态（高达数十TB）卸载到CPU或NVMe。内存缓冲区的重复使用可以防止CPU和GPU内存的内存碎片化。此层还为PyTorch张量提供固定内存数据，允许原地计算张量，然后将其写入NVMe，无需进一步复制，从而提高带宽。<br>
+*(固定内存（pinned memory）是一种特殊类型的内存，它在物理内存中被固定，不会被操作系统进行页面交换或移动。相比于常规的内存分配，固定内存的主要优势在于它可以提供更高的内存访问性能和数据传输速度。)* <br>
+
+# 7 方便的实施(EASE INSPIRED IMPLEMENTATION)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Infinity是基于PyTorch实现的，并且设计为在**不需要对模型代码进行重构的情况下使用**，类似于PyTorch中的标准数据并行训练。本节详细介绍了在实现这样一个系统时面临的一些挑战。<br>
+## 7.1 自动化数据传输
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Infinity必须协调模型参数、梯度和优化器状态所组成的张量的移动。当一个张量不在活动使用中时，它会被分区存储在不同的工作节点上，并且可能会被卸载(offload)到CPU或NVMe内存中。系统必须确保这些张量在需要使用时能够及时存在于GPU内存中，并在后续重新进行分区。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PyTorch模型被表示为一个层次结构的模块(module)，代表神经网络的各个层。例如，Transformer架构中包含了自注意力和前馈网络等子模块。自注意力子模块又由线性变换和其他子模块组成。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Infinity通过递归(recursively)地向模型的子模块(module)注入钩子来自动化所需的数据传输。在子模块的前向传递(forward pass)开始时，**这些钩子确保子模块的参数可用于计算**，否则会执行适当的allgather收集操作，并阻塞(block)直到参数可用。本文第6.2节详细介绍的重叠中心设计对于减少由于参数通信而引起的停顿非常关键。在子模块的前向传递结束时，我们再次对参数进行分区(partition)，并可选择将它们卸载(offload)。反向传递的处理方式(be handled)类似。<br>
+*(ZeRO-Infinity通过向模型注入钩子，并在子模块的前向传递和反向传递过程中进行参数的传输和重分区，实现了自动化的数据移动。这样可以确保在计算过程中所需的参数及时可用，并充分利用重叠计算和通信来最小化性能停顿。)* <br>
+### 7.1.1 自动注册外部参数
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 在理想情况下，一个子模块的参数和梯度只在其自身的前向传递和反向传递中被访问，这样可以很容易地识别和自动化数据移动，如上文所讨论的。然而，某些模型架构是例外情况，其中在一个子模块中定义和分配的参数在另一个子模块的前向传递和反向传递中被使用。例如，像GPT [41] 这样的语言模型在网络的开头和结尾共享嵌入层(embedding)的权重，以将单词映射到向量(反之亦然)。我们将**跨模块边界使用的参数称为外部参数**。在存在外部参数的情况下，很难确定在一个子模块的前向传递和反向传递的开始时要收集哪些参数。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了解决这个问题，一种方法是将外部参数注册到ZeRO-Infinity中，以便在访问它们的子模块的前向传递和反向传递过程中收集它们。注册后，外部参数将像其他参数一样处理，并包含在前文第6.2节中描述的预取系统中(prefetching system)。我们提供了用于手动注册外部参数的API。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了改善用户体验，我们还提供了机制来检测这些情况并自动注册外部参数，这样用户就不需要进行任何代码更改：<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**拦截(Intercepting)分区参数访问** PyTorch模块将其张量参数存储在哈希表中。在初始化时，我们用一个子类化的类型替换哈希表，并覆盖张量访问操作。当访问一个分区参数时，我们对该参数执行阻塞的allgather操作，将其注册为外部参数，然后返回收集到的参数。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**激活函数内省** 一个子模块可能会在其前向传递中返回一个参数，供另一个子模块的前向传递和反向传递使用。例如，Megatron-LM在线性层的前向传递中返回偏置向量，并由父级Transformer层模块使用。我们检查每个子模块的前向传递返回的激活输出，查找分区参数。如果发现一个分区参数，我们会收集并注册它作为外部参数。<br>
 
