@@ -92,7 +92,7 @@ $$L_{3}(\mathcal{C})=L_{2}(\mathcal{C})+\lambda * L_{1}(\mathcal{C})\ldots\ldots
 ###  <a name='setup'></a>4.1 setup
 无监督预训练 我们使用BooksCorpus数据集[71]来训练语言模型。它包含超过7000本独特的未出版的书籍，从各种类型，包括冒险，幻想和浪漫。至关重要的是，它包含了长时间的连续文本，这使得生成模型能够学习长期信息的条件（condition）。另一种数据集1B Word Benchmark，由类似的方法ELMo[44]使用，大小大致相同，但在句子级别上被打乱-破坏远程（long-range）结构。我们的语言模型在这个语料库上实现了一个非常低的token级别的复杂度18.4。<br>
 
-![table1](/images/gpt1_table1.jpg)
+![table1](images/gpt1_table1.jpg)
 
 **模型具体说明(specifications)** 我们的模型在很大程度上遵循了最初的transformer工作原理[62]。我们训练了一个12层解码器专用transformer与masked self-attention heads（768维状态和12个attention heads）。对于位置前馈网络，我们使用了3072维内部状态。我们使用了最大学习率为2.5e-4的Adam优化方案[27]。在最初的2000次更新中，学习率从零线性增加，并使用cosine schedule将其退火（annealed）为0。我们在512个tokens上随机取64个连续的序列，并用这些序列的minibatch对模型进行训练，迭代100次。由于在整个模型中广泛使用了layerNorm[2]，因此只需简单地用N(0, 0.02)分布去初始化即可。我们使用了一个字节位编码（BPE）词汇表，其中40000个合并(merges)[53]和剩余(residual)、嵌入(embedding)和注意力退出(attention dropouts),正则化率为0.1。我们还采用了[37]中提出的修正版本的L2正则化，所有非偏差或增益权重的 w = 0.01。对于激活函数，我们使用高斯误差线性单元（GELU）[18]。我们使用学习的位置嵌入(learned position embeddings)代替了原始工作中提出的正弦版本。我们使用ftfy库（https://ftfy.readthedocs.io/en/latest）清理BooksCorpus中的原始文本，标准化一些标点和空白，并使用spacy标记器（https://spacy.io/）。
 
