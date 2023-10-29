@@ -19,9 +19,11 @@ LoRA具有几个关键优势：<br>
 - LoRA与许多先前的方法正交，可以与其中许多方法结合使用，例如prefix-tuning。我们在附录E中提供了一个例子。<br>
 *(Prefix-tuning是一种用于自然语言处理（NLP）任务的模型自适应方法。它通过在预训练模型之前添加一个可优化的前缀向量来适应特定任务。这个前缀向量相当于一个任务特定的附加参数，它通过微调来与预训练模型一起进行训练。在推理时，前缀向量与预训练模型的输出进行组合，生成最终的任务特定预测结果。)*
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**术语和约定**：我们经常引用Transformer架构，并使用其维度的常规术语。我们将Transformer层的输入和输出维度大小称为 $d_{model}$ 。我们使用 $W_{q}$ 、 $W_{k}$ 、$W_{v}$ 和 $W_{o}$ 来表示自注意模块中的Q/K/V/output projection 矩阵。W或 $W_{0}$ 表示预训练的权重矩阵，∆W表示在适应过程中累积的梯度更新。我们使用r来表示LoRA模块的秩(rank)。我们遵循（Vaswani等，2017；Brown等，2020）设定的约定，并使用Adam（Loshchilov和Hutter，2019；Kingma和Ba，2017）进行模型优化，并使用Transformer MLP前馈维度 $d_{ffn} = 4 \times d_{model}$ 。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**术语和约定**：我们经常引用Transformer架构，并使用其维度的常规术语。我们将Transformer层的输入和输出维度大小称为 $d_{model}$ 。我们使用 $W_{q}$ 、 $W_{k}$ 、 $W_{v}$ 和 $W_{o}$ 来表示自注意模块中的Q/K/V/output projection 矩阵。W或 $W_{0}$ 表示预训练的权重矩阵，∆W表示在适应过程中累积的梯度更新。我们使用r来表示LoRA模块的秩(rank)。我们遵循（Vaswani等，2017；Brown等，2020）设定的约定，并使用Adam（Loshchilov和Hutter，2019；Kingma和Ba，2017）进行模型优化，并使用Transformer MLP前馈维度 $d_{ffn} = 4 \times d_{model}$ 。
 
 # 2 问题陈述
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;尽管我们的提议与训练目标无关，但我们将重点放在语言建模上，作为我们的动机案例。以下是语言建模问题的简要描述，特别是在给定任务特定提示的情况下最大化条件概率。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;假设我们有一个由参数Φ参数化的预训练自回归语言模型 $P_{\Phi}(y \mid x)$ 。例如, $P_{\Phi}(y \mid x)$ 可以是基于Transformer架构（Vaswani等，2017）的通用多任务学习器，如GPT（Radford等，b；Brown等，2020）。考虑将这个预训练模型调整到下游的条件文本生成任务中，例如摘要生成、机器阅读理解（MRC）和自然语言转SQL（NL2SQL）。每个下游任务由一个上下文-目标对的训练数据集表示：Z = {(xi, yi)}i=1,..,N，其中xi和yi都是标记序列。例如，在NL2SQL中，xi是一个自然语言查询，yi是它对应的SQL命令；在摘要生成中，xi是一篇文章的内容，yi是它的摘要。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;假设我们有一个由参数 $\Phi$ 参数化的预训练自回归语言模型 $P_{\Phi}(y \mid x)$ 。例如, $P_{\Phi}(y \mid x)$ 可以是基于Transformer架构（Vaswani等，2017）的通用多任务学习器，如GPT(Radford等，b；Brown等，2020)。考虑将这个预训练模型调整到下游的条件文本生成任务中，例如摘要生成、机器阅读理解（MRC）和自然语言转SQL（NL2SQL）。每个下游任务由一个上下文-目标对的训练数据集表示：$\mathcal{Z}=\left\{\left(x_{i}, y_{i}\right)\right\}_{i=1, . ., N}$ ，其中 $x_{i}$ 和 $y_{i}$ 都是标记序列。例如，在NL2SQL中, $x_{i}$ 是一个自然语言查询， $y_{i}$ 是它对应的SQL命令；在摘要生成中， $x_{i}$ 是一篇文章的内容， $y_{i}$ 是它的摘要。<br>
+
+
 
