@@ -47,7 +47,7 @@ LoRA具有几个关键优势：<br>
 # 4 我们的方法
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们描述了LoRA的简单设计及其实际好处。这里概述的原则适用于深度学习模型中的任何密集层，尽管在我们的实验中，我们只关注Transformer语言模型中的特定权重，作为激发使用案例。<br>
 ## 4.1 低秩参数化的更新矩阵
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;神经网络包含许多执行矩阵乘法的密集层。这些层中的权重矩阵通常具有满秩(full-rank)。当适应特定任务时，Aghajanyan等人（2020）表明，预训练语言模型具有较低的“内在维度(instrisic dimension)”，即使在随机投影到较小子空间后仍然可以高效学习。受此启发，我们假设在适应(adaptation)过程中，权重的更新也具有较低的“内在秩”。对于预训练的权重矩阵 $W_{0} \in \mathbb{R}^{d \times \bar{k}}$ ，我们通过使用低秩分解 $W_{0} + ∆W = W_{0} + BA$ 来约束其更新，其中, $B \in \mathbb{R}^{d \times \bar{r}}$ , $A \in \mathbb{R}^{r \times \bar{k}}$ ，秩 $r \ll min(d, k)$ 。在训练过程中，$W_{0}$ 被冻结，不接收梯度更新，而A和B包含可训练参数。注意, $W_{0}$ 和 ∆W = BA 都与相同的输入相乘，并且它们各自的输出向量在坐标方向上求和。对于 $h = W_{0}x$ ，我们修改后的前向传播如下：<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;神经网络包含许多执行矩阵乘法的密集层。这些层中的权重矩阵通常具有满秩(full-rank)。当适应特定任务时，Aghajanyan等人（2020）表明，预训练语言模型具有较低的“内在维度(instrisic dimension)”，即使在随机投影到较小子空间后仍然可以高效学习。受此启发，我们假设在适应(adaptation)过程中，权重的更新也具有较低的“内在秩”。对于预训练的权重矩阵 $W_{0} \in \mathbb{R}^{d \times \bar{k}}$ ，我们通过使用低秩分解 $W_{0} + ∆W = W_{0} + BA$ 来约束其更新，其中, $B \in \mathbb{R}^{d \times \bar{r}}$ , $A \in \mathbb{R}^{r \times \bar{k}}$ ，秩 $r \ll min(d, k)$ 。在训练过程中, $W_{0}$ 被冻结，不接收梯度更新，而A和B包含可训练参数。注意, $W_{0}$ 和 ∆W = BA 都与相同的输入相乘，并且它们各自的输出向量在坐标方向上求和。对于 $h = W_{0}x$ ，我们修改后的前向传播如下：<br>
 $$h=W_{0} x+\Delta W x=W_{0} x+B A x \ldots\ldots(3)$$
 
 
