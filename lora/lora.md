@@ -29,10 +29,28 @@ LoRA具有几个关键优势：<br>
 ![formula1](images/formula1.jpg)
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;完全微调的主要缺点之一是，对于每个下游任务，我们学习了一个不同的参数集 $\bigtriangleup \Phi$ ，其维度 $|\Delta \Phi|$ 与 $|\Delta \Phi_{0}|$ 相等。因此，如果预训练模型很大（例如GPT-3, $|\Delta \Phi_{0}|$ 约为1750亿个参数），存储和部署许多独立的微调模型实例可能会具有挑战性，甚至可能不可行。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本文中，我们采用了一种更高效的参数方法，其中任务特定的参数增量 $\Delta \Phi = \Delta \Phi(\theta )$ 由一组尺寸更小的参数 $\theta$ 进一步编码，满足 |\Theta| \ll\left|\Phi_{0}\right| . 因此，寻找 $\Delta \Phi $ 的任务变为在 $\Phi$ 上进行优化：<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本文中，我们采用了一种更高效的参数方法，其中任务特定的参数增量 $\Delta \Phi = \Delta \Phi(\Theta)$ 由一组尺寸更小的参数 $\Theta$ 进一步编码，满足 $|\Theta| \ll\left|\Phi_{0}\right|$ . 因此，寻找 $\Delta \Phi$ 的任务变为在 $\Phi$ 上进行优化：<br>
 
 ![formula2](images/formula2.jpg)
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在接下来的部分中，我们提议使用低秩表示来编码 $\Delta \Phi$ ，这**既具有计算效率又具有内存效率**。当预训练模型是GPT-3 175B时，可训练参数的数量 $|\theta|$ 可以仅为 $|\Phi_{0}|$ 的0.01%。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在接下来的部分中，我们提议使用低秩表示来编码 $\Delta \Phi$ ，这**既具有计算效率又具有内存效率**。当预训练模型是GPT-3 175B时，可训练参数的数量 $|\Theta|$ 可以仅为 $|\Phi_{0}|$ 的0.01%。
+
+# 3 现有的解决方案不够好吗？
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们所要解决的问题绝不是新问题。自从迁移学习的提出以来，已经有数十项工作致力于使模型适应更多参数和更高计算效率。请参见第6节，了解一些著名的工作调查。以语言建模为例，当涉及到高效适应时，有两种主要策略：**添加适配器层**（Houlsby等，2019；Rebuffi等，2017；Pfeiffer等，2021；Ruckl¨e等，2020）或**优化某些形式的输入层激活**（Li和Liang，2021；Lester等，2021；Hambardzumyan等，2020；Liu等，2021）。然而，这两种策略都有其局限性，特别是在大规模和延迟敏感的生产场景中。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**适配器层引入推理延迟** 适配器有许多变种。我们专注于Houlsby等人（2019）提出的原始设计，每个Transformer块有两个适配器层，以及Lin等人（2020）最近的一种设计，每个块只有一个适配器层，但带有额外的LayerNorm（Ba等人，2016）。虽然可以通过修剪层(pruning layer)或利用多任务设置(multi-task setting)(Ruckl¨e等人，2020；Pfeiffer等人，2021)来减少总体延迟，但没有直接的方法来绕过适配器层中的额外计算。这似乎不是个问题，因为适配器层通过具有较小的瓶颈(bottleneck)维度，设计为具有**少量参数**(有时比原始模型的参数少于1%)，这限制了它们增加的FLOPs。然而，大型神经网络依赖于硬件并行性来保持低延迟，而**适配器层必须按顺序进行处理**。这在批次大小通常只有一个的在线推理环境中产生了差异。在**没有**模型并行性的通用场景中，例如在单个GPU上运行GPT-2(Radford等人，2019)中等规模的推理，即使使用了非常小的瓶颈维度(表1)，使用适配器也会导致明显的延迟增加。<br>
+
+![table1](images/table1.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当我们像Shoeybi等人（2020）和Lepikhin等人（2020）那样对模型进行分片时，这个问题会变得更糟，因为额外的深度需要更多的同步GPU操作，如AllReduce和Broadcast，除非我们将适配器参数冗余地存储多次。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**直接优化提示信息是困难的**，就像前缀调优（prefix tuning）（Li和Liang，2021）所示的那样，面临着不同的挑战。我们观察到，前缀调优很难进行优化，并且其性能在可训练参数上变化非单调，这与原始论文中的类似观察结果一致。更根本地，为了适应而**保留一部分序列长度**必然会**减少可用于处理下游任务的序列长度**，我们怀疑这会使得调优提示信息的性能相对于其他方法较差。我们将在第5节中对任务性能进行研究。<br>
+
+# 4 我们的方法
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们描述了LoRA的简单设计及其实际好处。这里概述的原则适用于深度学习模型中的任何密集层，尽管在我们的实验中，我们只关注Transformer语言模型中的特定权重，作为激发使用案例。<br>
+## 4.1 低秩参数化的更新矩阵
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;神经网络包含许多执行矩阵乘法的密集层。这些层中的权重矩阵通常具有满秩(full-rank)。当适应特定任务时，Aghajanyan等人（2020）表明，预训练语言模型具有较低的“内在维度(instrisic dimension)”，即使在随机投影到较小子空间后仍然可以高效学习。受此启发，我们假设在适应(adaptation)过程中，权重的更新也具有较低的“内在秩”。对于预训练的权重矩阵 $W_{0} \in \mathbb{R}^{d \times \bar{k}}$ ，我们通过使用低秩分解 $W_{0} + ∆W = W_{0} + BA$ 来约束其更新，其中, $B \in \mathbb{R}^{d \times \bar{r}}$ , $A \in \mathbb{R}^{r \times \bar{k}}$ ，秩 $r \ll min(d, k)$ 。在训练过程中，$W_{0}$ 被冻结，不接收梯度更新，而A和B包含可训练参数。注意, $W_{0}$ 和 ∆W = BA 都与相同的输入相乘，并且它们各自的输出向量在坐标方向上求和。对于 $h = W_{0}x$ ，我们修改后的前向传播如下：<br>
+$$h=W_{0} x+\Delta W x=W_{0} x+B A x \ldots\ldots(3)$$
+
+
+
 
 
