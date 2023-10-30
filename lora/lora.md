@@ -71,7 +71,7 @@ $$h=W_{0} x+\Delta W x=W_{0} x+B A x \ldots\ldots(3)$$
 
 ## 5.1 基准模型
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了广泛比较其他基准模型，我们复制了以前研究中使用的设置，并在可能的情况下重用其报告的结果。然而，这意味着某些基准模型可能只出现在特定的实验中。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;微调（Fine-Tuning，FT）是一种常见的自适应方法。在微调过程中，模型被初始化为预训练的权重和偏置，并对**所有模型参数**进行梯度更新。**一种简单的变体是只更新某些层而冻结其他层**。我们包括了一种在以前的研究中报告的基准模型（Li＆Liang，2021）在**GPT-2上，它仅调整了最后两层( $FT_{Top2}$ )**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**微调(Fine-Tuning，FT)** 是一种常见的自适应方法。在微调过程中，模型被初始化为预训练的权重和偏置，并对**所有模型参数**进行梯度更新。**一种简单的变体是只更新某些层而冻结其他层**。我们包括了一种在以前的研究中报告的基准模型（Li＆Liang，2021）在**GPT-2上，它仅调整了最后两层( $FT_{Top2}$ )**。<br>
 
 ![table2](images/lora-table2.jpg)
 
