@@ -71,11 +71,11 @@ $$h=W_{0} x+\Delta W x=W_{0} x+B A x \ldots\ldots(3)$$
 
 ## 5.1 基准模型
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了广泛比较其他基准模型，我们复制了以前研究中使用的设置，并在可能的情况下重用其报告的结果。然而，这意味着某些基准模型可能只出现在特定的实验中。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;微调（Fine-Tuning，FT）是一种常见的自适应方法。在微调过程中，模型被初始化为预训练的权重和偏置，并对**所有模型参数**进行梯度更新。**一种简单的变体是只更新某些层而冻结其他层**。我们包括了一种在以前的研究中报告的基准模型（Li＆Liang，2021）在**GPT-2上，它仅调整了最后两层( $FT_{Top2}$ )**。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;微调（Fine-Tuning，FT）是一种常见的自适应方法。在微调过程中，模型被初始化为预训练的权重和偏置，并对**所有模型参数**进行梯度更新。**一种简单的变体是只更新某些层而冻结其他层**。我们包括了一种在以前的研究中报告的基准模型（Li＆Liang，2021）在**GPT-2上，它仅调整了最后两层( $FT_{Top2}$ )**。<br>
 
-![table2](images/table2.jpg)
+![table2](images/lora-table2.jpg)
 
 *(MNLI-蕴含任务，SST-2:情感分类；MRPC：语义相似判断；CoLA：语法合理性判断任务；QNLI：问答任务；QQP：问题配对任务； RTE：文本蕴含任务；STS-B：语义相似任务)*
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**Bias-only或BitFit**是一种基准模型，其中我们只训练偏置向量，同时冻结其他所有参数。近期，BitFit（Zaken等人，2021）也研究了这种基准模型。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;前缀嵌入tuning(PreEmbed)在输入标记(input tokens)之间插入特殊标记(special tokens)。这些特殊标记具有**可训练**的词嵌入，通常不在模型的词汇表中。在哪里放置这些标记会对性能产生影响。我们关注“前缀化”，即将这些标记前置于提示之前，以及“中缀化”，即将其附加到提示之后；这两种方法在Li＆Liang（2021）中进行了讨论。我们使用 $l_{p}$(或 $l_{i}$ )表示前缀(或中缀)标记的数量。可训练参数的数量为 $|\Theta|=d_{model} \times\left(l_{p}+l_{i}\right)$ 。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**前缀嵌入tuning(PreEmbed)** 在输入标记(input tokens)之间插入特殊标记(special tokens)。这些特殊标记具有**可训练**的词嵌入，通常不在模型的词汇表中。在哪里放置这些标记会对性能产生影响。我们关注“前缀化”，即将这些标记前置于提示之前，以及“中缀化”，即将其附加到提示之后；这两种方法在Li＆Liang（2021）中进行了讨论。我们使用 $l_{p}$(或 $l_{i}$ )表示前缀(或中缀)标记的数量。可训练参数的数量为 $|\Theta|=d_{model} \times\left(l_{p}+l_{i}\right)$ 。<br>
