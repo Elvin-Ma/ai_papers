@@ -84,7 +84,7 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们将讨论在基于我们的卸载策略的单GPU系统上实现ZeRO-Offload的具体计算和通信调度。然后，我们将展示如何将这个调度有效地扩展到多GPU系统上，通过将我们的卸载策略与ZeRO数据并行和模型并行相结合。<br>
 
 ## 4.1 单GPU调度
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如第3节所讨论的，ZeRO-Offload对数据进行分区，将fp16参数存储在GPU中，而将fp16梯度和所有优化器状态(如fp32动量、方差和参数(parameters))存储在CPU中。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如第3节所讨论的，ZeRO-Offload对数据进行分区，将fp16参数存储在GPU中，而将fp16梯度和所有优化器状态(如fp32动量、方差和参数(parameters))存储在CPU中。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在训练过程中，我们首先通过前向传播计算损失。由于fp16参数已经存在于GPU上，因此在这部分计算中不需要进行CPU通信。在反向传播过程中，不同参数的梯度在反向计算的不同时间点上被计算出来。ZeRO-Offload可以**立即将这些梯度逐个或小组地**传输到CPU内存中。因此，在将梯度传输到CPU内存之前，GPU内存只需要**暂时**存储少量的梯度。此外，每个梯度传输可以与反向图中剩余部分的反向传播重叠，使**ZeRO-Offload能够隐藏大部分通信成本**。<br>
 
 ![figure3](images/zero-offload-figure3.jpg) 
