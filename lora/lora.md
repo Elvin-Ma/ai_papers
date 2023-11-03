@@ -39,7 +39,7 @@ LoRA具有几个关键优势：<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们所要解决的问题绝不是新问题。自从迁移学习的提出以来，已经有数十项工作致力于使模型适应更多参数和更高计算效率。请参见第6节，了解一些著名的工作调查。以语言建模为例，当涉及到高效适应时，有两种主要策略：**添加适配器层**（Houlsby等，2019；Rebuffi等，2017；Pfeiffer等，2021；Ruckl¨e等，2020）或**优化某些形式的输入层激活**（Li和Liang，2021；Lester等，2021；Hambardzumyan等，2020；Liu等，2021）。然而，这两种策略都有其局限性，特别是在大规模和延迟敏感的生产场景中。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**适配器层引入推理延迟** 适配器有许多变种。我们专注于Houlsby等人（2019）提出的原始设计，每个Transformer块有两个适配器层，以及Lin等人（2020）最近的一种设计，每个块只有一个适配器层，但带有额外的LayerNorm（Ba等人，2016）。虽然可以通过修剪层(pruning layer)或利用多任务设置(multi-task setting)(Ruckl¨e等人，2020；Pfeiffer等人，2021)来减少总体延迟，但没有直接的方法来绕过适配器层中的额外计算。这似乎不是个问题，因为适配器层通过具有较小的瓶颈(bottleneck)维度，设计为具有**少量参数**(有时比原始模型的参数少于1%)，这限制了它们增加的FLOPs。然而，大型神经网络依赖于硬件并行性来保持低延迟，而**适配器层必须按顺序进行处理**。这在批次大小通常只有一个的在线推理环境中产生了差异。在**没有**模型并行性的通用场景中，例如在单个GPU上运行GPT-2(Radford等人，2019)中等规模的推理，即使使用了非常小的瓶颈维度(表1)，使用适配器也会导致明显的延迟增加。<br>
 
-![table1](images/table1.jpg)
+![table1](images/lora-table1.jpg)
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当我们像Shoeybi等人（2020）和Lepikhin等人（2020）那样对模型进行分片时，这个问题会变得更糟，因为额外的深度需要更多的同步GPU操作，如AllReduce和Broadcast，除非我们将适配器参数冗余地存储多次。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**直接优化提示信息是困难的**，就像前缀调优（prefix tuning）（Li和Liang，2021）所示的那样，面临着不同的挑战。我们观察到，前缀调优很难进行优化，并且其性能在可训练参数上变化非单调，这与原始论文中的类似观察结果一致。更根本地，为了适应而**保留一部分序列长度**必然会**减少可用于处理下游任务的序列长度**，我们怀疑这会使得调优提示信息的性能相对于其他方法较差。我们将在第5节中对任务性能进行研究。<br>
@@ -80,4 +80,32 @@ $$h=W_{0} x+\Delta W x=W_{0} x+B A x \ldots\ldots(3)$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**Bias-only或BitFit**是一种基准模型，其中我们只训练偏置向量，同时冻结其他所有参数。近期，BitFit（Zaken等人，2021）也研究了这种基准模型。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**前缀嵌入Prefix-embedding tuning(PreEmbed)** 在输入标记(input tokens)之间插入特殊标记(special tokens)。这些特殊标记具有**可训练**的词嵌入，通常不在模型的词汇表中。在哪里放置这些标记会对性能产生影响。我们关注“前缀化”，即将这些标记前置于提示之前，以及“中缀化”，即将其附加到提示之后；这两种方法在Li＆Liang（2021）中进行了讨论。我们使用 $l_{p}$(或 $l_{i}$ )表示前缀(或中缀)标记的数量。可训练参数的数量为 $|\Theta|=d_{model} \times\left(l_{p}+l_{i}\right)$ 。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**前缀层调整Prefix-layer tuning(PreLayer)** 是前缀嵌入(preEmbed)调整的扩展。与仅仅学习一些特殊标记的词嵌入（或等效地说，嵌入层后的激活）不同，我们学习每个Transformer层后的激活。之前层次的激活被可训练的激活所替代。结果可训练参数的数量为 $|Θ| = L \times d_{model} \times (l_{p} + l_{i})$ ，其中L为Transformer层的数量。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**适配器调整(Adapter tuning)** ,正如Houlsby等人（2019）所提出的，将适配器层插入自注意模块(和MLP模块)与后续残差连接之间。**适配器层包含两个带有偏置的全连接层**，**中间有非线性激活函数**。我们将这个最初的设计称为 $Adapter^{H}$ 。最近，Lin等人（2020）提出了一种更高效的设计，**仅将适配器层应用于MLP模块之后和LayerNorm之后**。我们称之为 $Adapter^{L}$ 。这与Pfeiffer等人（2021）提出的另一种设计非常相似，我们称之为 $Adapter^{P}$ 。我们还包括另一种名为AdapterDrop（Ruckl¨e等人，2020）的基准模型，该模型删除了一些适配器层以提高效率（AdapterD）。我们尽可能引用先前工作的数据，以便与更多基准模型进行比较；它们在第一列带有星号（*）的行中。在所有情况下，我们有 $|\Theta|=L_{Adpt} \times (2 \times d_{model} \times r + r + d_{model}) + 2 \times L_{LN} \times d_{model}$ ，其中 $L_{Adpt}$ 是适配器层的数量，$L_{Adpt}$ 是可训练的LayerNorm层的数量（例如，在AdapterL中）。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**适配器调整(Adapter tuning)** ,正如Houlsby等人（2019）所提出的，将适配器层插入自注意模块(和MLP模块)与后续残差连接之间。**适配器层包含两个带有偏置的全连接层**，**中间有非线性激活函数**。我们将这个最初的设计称为 $Adapter^{H}$ 。最近，Lin等人（2020）提出了一种更高效的设计，**仅将适配器层应用于MLP模块之后和LayerNorm之后**。我们称之为 $Adapter^{L}$ 。这与Pfeiffer等人（2021）提出的另一种设计非常相似，我们称之为 $Adapter^{P}$ 。我们还包括另一种名为AdapterDrop（Ruckl¨e等人，2020）的基准模型，该模型删除了一些适配器层以提高效率（AdapterD）。我们尽可能引用先前工作的数据，以便与更多基准模型进行比较；它们在第一列带有星号（*）的行中。在所有情况下，我们有 $|\Theta|=L_{Adpt} \times (2 \times d_{model} \times r + r + d_{model}) + 2 \times L_{LN} \times d_{model}$ ，其中 $L_{Adpt}$ 是适配器层的数量, $L_{LN}$ 是可训练的LayerNorm层的数量（例如，在AdapterL中）。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**LoRA(Low-Rank Attention)** 在现有的权重矩阵旁边添加了可训练的秩分解矩阵对。正如在第4.2节中提到的，为了简化起见，在大多数实验中，我们**只将LoRA应用于W_q和W_v**。可训练参数的数量由秩r和原始权重的形状决定： $|Theta| = 2 \times L_{LoRA} \times d_{model} \times r, 其中 $L_{LoRA}$ 是我们应用LoRA的权重矩阵的数量。<br>
+
+## 5.2 ROBERT_A BASE/LARGE
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**RoBERTa（Liu等人，2019）对最初由BERT（Devlin等人，2019a）提出的预训练方法进行了优化**，并提高了后者(bert)的任务性能，而没有引入更多的可训练参数。近年来，尽管RoBERTa在诸如GLUE（通用语言理解评估）基准测试（Wang等人，2019）等NLP排行榜上被更大的模型超越，但它仍然是一种在实践中尺寸适中的具有竞争力和受欢迎的预训练模型。我们从HuggingFace Transformers库（Wolf等人，2020）中获取预训练的RoBERTa base（125M）和RoBERTa large（355M），并在GLUE基准测试中评估不同高效适应方法在各个任务上的性能。我们还根据Houlsby等人（2019）和Pfeiffer等人（2021）的设置进行复现。为了确保公平比较，我们在与适配器进行比较时对LoRA的评估进行了两个关键更改。首先，我们对所有任务使用相同的批量大小，并使用序列长度为128以匹配适配器baseline。其次，我们将模型初始化为在MRPC、RTE和STS-B上的预训练模型，而不是像微调基准模型那样已经适应于MNLI。按照Houlsby等人（2019）更受限制的设置运行的结果标记为†。结果呈现在表2的前三个部分中。有关使用的超参数的详细信息，请参见D.1节。<br>
+
+![table2](images/lora-table2.jpg)
+
+## 5.3 DEBERT_A XXL
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DeBERTa（He等人，2021）是BERT的一个较新的变体，它在更大规模上进行了训练，并在GLUE(通用语言理解评估)（Wang等人，2019）和SuperGLUE（Wang等人，2020）等基准测试中表现出很高的竞争力。我们评估LoRA是否仍然能够在GLUE上与**完全微调**的DeBERTa XXL（1.5B）的性能相匹配。结果呈现在表2的底部部分中。有关使用的超参数的详细信息，请参见D.2节。<br>
+
+## 5.4 GPT-2 MEDIUM/LARGE
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在展示了LoRA可以作为**完全微调**的竞争性替代方案之后，我们希望回答LoRA在自热语言生成模型(NLG)（如GPT-2 medium和large）上是否仍然占据主导地位（Radford等人，b）。为了进行直接比较，我们将设置尽可能接近Li＆Liang（2021）的设置。由于篇幅限制，在本节中我们只呈现在E2E NLG Challenge上的结果（表3）。有关WebNLG（Gardent等人，2017）和DART（Nan等人，2020）的结果，请参见F.1节。我们在D.3节中列出了使用的超参数列表。<br>
+
+![table3](images/lora-table3.jpg)
+
+## 5.5 扩展到GPT-3 175B
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;作为对LoRA的最后一次压力测试，我们将其扩展到拥有1750亿个参数的GPT-3。由于训练成本高昂，我们仅报告给定任务在随机种子上的典型标准差，而不是为每个条目提供一个标准差。有关使用的超参数的详细信息，请参见D.4节。<br>
+
+![table3](images/lora-table3.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如表4所示，LoRA在所有三个数据集上达到或超过了微调基准。需要注意的是，并非所有方法在拥有更多可训练参数时都具有单调性的收益，如图2所示。当我们在前缀嵌入调整中使用超过256个特殊标记或在前缀层调整中使用超过32个特殊标记时，我们观察到明显的性能下降。这与Li＆Liang（2021）中的类似观察结果一致。虽然对这一现象的彻底调查超出了本文的范围，但我们怀疑**更多的特殊标记会导致输入分布进一步偏离预训练数据分布**。此外，我们在F.3节中研究了不同适应方法在低数据情况下的性能。<br>
+
+![figure2](images/lora-figure2.jpg)
+
+# 6 相关工作
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Transformer语言模型。Transformer（Vaswani等人，2017）是一种序列到序列的架构，它广泛使用自注意力机制。Radford等人（a）通过使用一堆Transformer解码器将其应用于自回归语言建模。从那时起，基于Transformer的语言模型在NLP领域占据主导地位，在许多任务中达到了最先进的水平。BERT（Devlin等人，2019b）和GPT-2（Radford等人，b）引入了一种新的范式，它们都是在大量文本上进行训练的大型Transformer语言模型，通过在预训练通用领域数据上进行任务特定数据的微调，相比直接在任务特定数据上进行训练，可以显著提高性能。训练更大的Transformer通常会得到更好的性能，并且仍然是一个活跃的研究方向。GPT-3（Brown等人，2020）是迄今为止训练参数最多的单个Transformer语言模型，拥有1750亿个参数。<br>
+
+
