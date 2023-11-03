@@ -26,12 +26,12 @@ LoRA具有几个关键优势：<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;假设我们有一个由参数 $\Phi$ 参数化的预训练自回归语言模型 $P_{\Phi}(y \mid x)$ 。例如, $P_{\Phi}(y \mid x)$ 可以是基于Transformer架构（Vaswani等，2017）的通用多任务学习器，如GPT(Radford等，b；Brown等，2020)。考虑将这个预训练模型调整到下游的条件文本生成任务中，例如摘要生成、机器阅读理解（MRC）和自然语言转SQL（NL2SQL）。每个下游任务由一个上下文-目标对的训练数据集表示: $\mathcal{Z}=\left\lbrace (x_{i}, x_{i}) \right\rbrace_{i = 1, \dots, N}$ , 其中 $x_{i}$ 和 $y_{i}$ 都是标记序列。例如，在NL2SQL中, $x_{i}$ 是一个自然语言查询， $y_{i}$ 是它对应的SQL命令；在摘要生成中， $x_{i}$ 是一篇文章的内容， $y_{i}$ 是它的摘要。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在完全微调过程中，模型的初始权重被设定为预训练权重 $\Phi_{0}$ ，并通过重复迭代梯度来最大化条件语言建模目标(公式1)，从而更新为 $\Phi_{0} + \bigtriangleup \Phi$ : <br>
 
-![formula1](images/formula1.jpg)
+![formula1](images/lora-formula1.jpg)
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;完全微调的主要缺点之一是，对于每个下游任务，我们学习了一个不同的参数集 $\bigtriangleup \Phi$ ，其维度 $|\Delta \Phi|$ 与 $|\Delta \Phi_{0}|$ 相等。因此，如果预训练模型很大（例如GPT-3, $|\Delta \Phi_{0}|$ 约为1750亿个参数），存储和部署许多独立的微调模型实例可能会具有挑战性，甚至可能不可行。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本文中，我们采用了一种更高效的参数方法，其中任务特定的参数增量 $\Delta \Phi = \Delta \Phi(\Theta)$ 由一组尺寸更小的参数 $\Theta$ 进一步编码，满足 $|\Theta| \ll\left|\Phi_{0}\right|$ . 因此，寻找 $\Delta \Phi$ 的任务变为在 $\Phi$ 上进行优化：<br>
 
-![formula2](images/formula2.jpg)
+![formula2](images/lora-formula2.jpg)
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在接下来的部分中，我们提议使用低秩表示来编码 $\Delta \Phi$ ，这**既具有计算效率又具有内存效率**。当预训练模型是GPT-3 175B时，可训练参数的数量 $|\Theta|$ 可以仅为 $|\Phi_{0}|$ 的0.01%。
 
@@ -80,4 +80,4 @@ $$h=W_{0} x+\Delta W x=W_{0} x+B A x \ldots\ldots(3)$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**Bias-only或BitFit**是一种基准模型，其中我们只训练偏置向量，同时冻结其他所有参数。近期，BitFit（Zaken等人，2021）也研究了这种基准模型。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**前缀嵌入Prefix-embedding tuning(PreEmbed)** 在输入标记(input tokens)之间插入特殊标记(special tokens)。这些特殊标记具有**可训练**的词嵌入，通常不在模型的词汇表中。在哪里放置这些标记会对性能产生影响。我们关注“前缀化”，即将这些标记前置于提示之前，以及“中缀化”，即将其附加到提示之后；这两种方法在Li＆Liang（2021）中进行了讨论。我们使用 $l_{p}$(或 $l_{i}$ )表示前缀(或中缀)标记的数量。可训练参数的数量为 $|\Theta|=d_{model} \times\left(l_{p}+l_{i}\right)$ 。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**前缀层调整Prefix-layer tuning(PreLayer)** 是前缀嵌入(preEmbed)调整的扩展。与仅仅学习一些特殊标记的词嵌入（或等效地说，嵌入层后的激活）不同，我们学习每个Transformer层后的激活。之前层次的激活被可训练的激活所替代。结果可训练参数的数量为 $|Θ| = L \times d_{model} \times (l_{p} + l_{i})$ ，其中L为Transformer层的数量。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**适配器调整(Adapter tuning)** ,正如Houlsby等人（2019）所提出的，将适配器层插入自注意模块(和MLP模块)与后续残差连接之间。**适配器层包含两个带有偏置的全连接层**，**中间有非线性激活函数**。我们将这个最初的设计称为 $Adapter^{H}$ 。最近，Lin等人（2020）提出了一种更高效的设计，**仅将适配器层应用于MLP模块之后和LayerNorm之后**。我们称之为 $Adapter^{L}$ 。这与Pfeiffer等人（2021）提出的另一种设计非常相似，我们称之为 $Adapter^{P}$ 。我们还包括另一种名为AdapterDrop（Ruckl¨e等人，2020）的基准模型，该模型删除了一些适配器层以提高效率（AdapterD）。我们尽可能引用先前工作的数据，以便与更多基准模型进行比较；它们在第一列带有星号（*）的行中。在所有情况下，我们有 $|\Theta|=\hat{L}_{\text {Adpt }} \times\left(2 \times d_{\text {model }} \times r+r+d_{\text {model }}\right)+2 \times \hat{L}_{L N} \times d_{\text {model }} $ ，其中 $\hat{L}_{Adpt}$ 是适配器层的数量，$\hat{L}_{Adpt}$ 是可训练的LayerNorm层的数量（例如，在AdapterL中）。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**适配器调整(Adapter tuning)** ,正如Houlsby等人（2019）所提出的，将适配器层插入自注意模块(和MLP模块)与后续残差连接之间。**适配器层包含两个带有偏置的全连接层**，**中间有非线性激活函数**。我们将这个最初的设计称为 $Adapter^{H}$ 。最近，Lin等人（2020）提出了一种更高效的设计，**仅将适配器层应用于MLP模块之后和LayerNorm之后**。我们称之为 $Adapter^{L}$ 。这与Pfeiffer等人（2021）提出的另一种设计非常相似，我们称之为 $Adapter^{P}$ 。我们还包括另一种名为AdapterDrop（Ruckl¨e等人，2020）的基准模型，该模型删除了一些适配器层以提高效率（AdapterD）。我们尽可能引用先前工作的数据，以便与更多基准模型进行比较；它们在第一列带有星号（*）的行中。在所有情况下，我们有 $|\Theta|=L_{Adpt} \times (2 \times d_{model} \times r + r + d_{model}) + 2 \times L_{LN} \times d_{model}$ ，其中 $L_{Adpt}$ 是适配器层的数量，$L_{Adpt}$ 是可训练的LayerNorm层的数量（例如，在AdapterL中）。
