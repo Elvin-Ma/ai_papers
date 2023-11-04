@@ -157,6 +157,7 @@ $$\phi\left(A_{r=64}, A_{r=8}, i, j\right)$$
 
 ![figure4](images/lora-figure4.jpg)
 
-
+## 7.3 ∆W与W的比较
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们进一步研究∆W和W之间的关系。特别地，∆W是否与W高度相关？（或者在数学上说，∆W是否主要包含在W的顶部奇异方向中？）此外，与W中对应方向相比，∆W有多“大”？这可以揭示预训练语言模型自适应的潜在机制。<br>
 
 
