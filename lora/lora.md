@@ -160,8 +160,5 @@ $$\phi\left(A_{r=64}, A_{r=8}, i, j\right)$$
 ## 7.3 ∆W与W的比较
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们进一步研究∆W和W之间的关系。特别地，∆W是否与W高度相关？（或者在数学上说，∆W是否主要包含在W的顶部奇异方向中？）此外，与W中对应方向相比，∆W有多“大”？这可以揭示预训练语言模型自适应的潜在机制。<br>
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了回答这些问题，通过公式 $U^{T}WV^{T} 将W投影到∆W的r维子空间上，其中U/V 是∆W的左/右奇异向量矩阵。然后，我们比较 $\left\|U^{\top} W V^{\top}\right\||$ 和 $\|W\|_{F}$ 之间的Frobenius范数。作为对比，我们还通过将U、V替换为W的前r个奇异向量或一个随机矩阵，计算 $\left\|U^{\top} W V^{\top}\right\|_{F}$ 。<br>
-
-
-
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了回答这些问题，通过公式 $U^{T}WV^{T} 将W投影到∆W的r维子空间上，其中U/V 是∆W的左/右奇异向量矩阵。然后，我们比较之间的Frobenius范数。作为对比，我们还通过将U、V替换为W的前r个奇异向量或一个随机矩阵，计算 $\left\|U^{\top} W V^{\top}\right\|_{F}$ 。<br>
 
