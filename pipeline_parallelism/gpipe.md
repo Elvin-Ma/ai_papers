@@ -80,8 +80,12 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;接下来，我们通过扩展自然语言处理（NLP）中使用的模型来展示GPipe的灵活性。由于有大量可用的平行语料库(corpora)，神经机器翻译（NMT）已成为用于NLP的任何架构的基准任务[33, 15, 34, 35, 36]。因此，我们在一个大规模的多语言NMT任务上继续进行GPipe实验。我们使用包含102种语言和英语的平行文档语料库，总共包含250亿个训练示例，每种语言的范围从10^4到10^9 [37]。该数据集通过跨越从数据稀缺（低资源）到数据丰富（高资源）的多种语言，为可扩展性实验提供了一个真实的测试基础。我们首次展示了足够大的NMT模型可以**同时学习100多种语言对之间的映射**，并且在所有语言上的性能都优于双语模型。这进一步凸显了拥有高效灵活的模型并行工具的重要性。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们的比较基于在该语料库中训练的单个Transformer [15]的性能。我们通过两个维度来扩展架构，以展示GPipe的灵活性：（i）沿深度增加模型中的层数，（ii）沿宽度增加前馈层中的隐藏维度和多头注意力层中的注意力头数（以及注意力通道数），类似于Shazeer等人[34]的方法。有关我们的数据集、基准线、训练配置和优化超参数的详细描述，请参阅补充材料。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们从一个标准的400M参数的Transformer Big模型T(6, 8192, 16)1开始，如Chen等人[35]所述，词汇表大小为64k。在图3中，我们将其性能与一个13亿参数的深层模型T(24, 8192, 16)、一个13亿参数的宽模型T(12, 16384, 32)、一个30亿参数的模型T(32, 16384, 32)和一个60亿参数的模型T(64, 16384, 32)进行了比较。所有模型都同时在所有语言对上进行训练，使用了多语言BERT2[3]中采用的基于温度的采样方法。T(12, 16384, 32)、T(24, 8192, 32)、T(32, 16384, 32)和T(64, 16384, 32)分别在2、4、8和16个加速器上进行分区。<br>
-*(注释：1T(L, H, A) --> Transformer model with L encoder layers and L decoder layers, hidden dimension of H and A attention heads. The model dimension is fixed to 1024.)*
-*(https://github.com/google-research/bert/blob/master/multilingual.md)*
+*(注释：1T(L, H, A) --> Transformer model with L encoder layers and L decoder layers, hidden dimension of H and A attention heads. The model dimension is fixed to 1024.)* <br>
+*(https://github.com/google-research/bert/blob/master/multilingual.md)* <br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;从图3中，我们可以观察到将模型容量从4亿参数增加到13亿参数会显著提高所有语言的性能。将模型从13亿参数扩展到60亿参数显示出进一步的改进，特别是对于高资源语言，尽管当将模型从13亿参数扩展到30亿和60亿参数时，**递减收益也可观察到**。接下来，我们将根据这些大规模实验的结果讨论一些我们的经验发现。<br>
+
+![figure3](images/gpipe-figure3.jpg)
 
 
 
