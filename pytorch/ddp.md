@@ -41,7 +41,74 @@
 - 参数平均的结构将计算（即反向传播）和通信（即计算平均值）分为**不重叠**的阶段，使用优化器的**step()函数作为硬分界点**。无论我们如何强化计算或通信的优化，一种类型的资源在任何给定的时间点都会处于空闲状态，放弃了大量的性能优化机会。<br>
 *(注释：因为反向传播需要知道weight的值）*
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;基于上述基本陷阱，我们决定使用数据并行来实现分布式训练，以**同步梯度而不是参数**。请注意，应用程序仍然可以轻松地使用PyTorch构建参数平均。事实上，第3.3节中描述的集合通信功能是这种用例的适当解决方案。应用程序只需要显式地启动AllReduce操作，以相应地计算平均参数。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;基于上述基本陷阱(pitfalls)，我们决定使用数据并行来实现分布式训练，以**同步梯度(gradient)而不是参数(parameters)**。请注意，应用程序仍然可以轻松地使用PyTorch构建参数平均。事实上，第3.3节中描述的集合通信功能是这种用例的适当解决方案。应用程序只需要显式地启动AllReduce操作，以相应地计算平均参数。<br>
+
+## 2.3 AllReduce
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AllReduce是DistributedDataParallel使用的原始通信API，用于在所有进程之间计算梯度求和(sum)。它受到多个通信库的支持，包括NCCL [2]、Gloo [1]和MPI [4]。AllReduce操作要求每个参与的进程提供一个**大小相等的张量**，对来自所有进程的输入张量进行共同的算术操作（例如求和、乘积、最小值、最大值），并**将相同的结果张量返回给每个参与者**。一个简单的实现可以让每个进程将其输入张量广播到所有对等进程，然后独立地应用算术操作。然而，由于**AllReduce对分布式训练速度有重大影响**，通信库已经实现了更复杂、更高效的算法，例如基于环的AllReduce [2]和基于树的AllReduce [22]。由于一个AllReduce操作直到所有进程都加入才能开始，因此它被认为是一种**同步通信**，与**参数服务器 [27]** 中使用的点对点通信形成对比。<br>
+
+# 3系统设计
+
+![figure1](images/ddp-figure1.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PyTorch [30] 提供了一个DistributedDataParallel (DDP)模块，可以帮助在多个进程和机器上轻松并行化训练。在分布式训练中，每个进程都有自己的**本地模型副本**和**本地优化器**。就正确性而言，分布式数据并行训练和本地训练必须在数学上等价。DDP通过**确保所有模型副本从完全相同的模型状态开始**，并在每次反向传播后看到**相同的参数梯度**来保证正确性。因此，即使来自不同进程的优化器都是独立的，它们应该能够在每次迭代结束时将其本地模型副本带到相同的状态。图1展示了DDP的构建模块，包括Python API前端、C++梯度减少核心算法(gradient reduction core algorithm)，并采用c10d集合通信库。以下各节按照这个堆栈图的自顶向下顺序来介绍。<br>
+*(注释：对于具有固有随机性的优化器，不同的进程可以使用相同的随机种子来初始化它们的状态。)* <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;第3.1节介绍了API设计原则。第3.2节解释了PyTorch分布式数据并行训练中使用的梯度减少(gradient reduction)技术。最后，第3.3节讨论了DDP的集合通信后端。<br>
+
+## 3.1 API
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在设计API时，我们制定了两个设计目标，以实现所需的功能。<br>
+- 非侵入性：API必须对应用程序是非侵入性的。应用程序开发人员通常从编写本地训练脚本开始，在单台机器上达到资源限制时才扩展。此时，要求开发人员重写整个应用程序以启用分布式数据并行训练是不可接受的。相反，开发人员应该能够最小限度地修改并重用本地训练脚本。
+- 拦截性(Interceptive)：API需要允许实现(implementation)拦截各种信号并及时触发适当的算法。分布式数据并行旨在通过使用更多计算资源加速训练。这个过程需要在计算和通信中进行微妙(subtle)的优化，以实现最佳性能。因此，API必须尽可能多地向内部实现暴露优化机会。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;根据上述要求，我们将**分布式数据并行(DDP)实现为一个nn.Module**，它将**本地模型(local model)作为构造函数参数**，并在反向传播中透明地同步梯度(synchronizes)。下面的代码片段展示了使用DDP模块的示例。该示例使用nn.Linear层在第10行创建一个本地模型。然后，在第11行将本地模型转换为分布式训练模型，并在第12行设置优化器。第14到23行是典型的前向传播、反向传播和优化器步骤的实现。在这个玩具(toy)分布式训练示例中，第11行是将本地训练应用程序转换为分布式应用程序的唯一区别，这满足了非侵入性的要求。它还满足了拦截性的要求。构造函数允许DDP检查模型结构和参数。**构造完成后，本地模型将被分布式模型替换**，然后可以轻松拦截(Intercept)forward()调用以执行相应的操作。对于反向传播，DDP依赖于**反向钩子**来触发(trigger)梯度减少，当在损失张量上执行backward()时，它(gradient reduction)将由自动求导引擎调用.<br>
+
+```python
+1 import torch
+2 import torch.nn as nn
+3 import torch.nn.parallel as par
+4 import torch.optim as optim
+5
+6 # initialize torch.distributed properly
+7 # with init_process_group
+8
+9 # setup model and optimizer
+10 net = nn.Linear (10 , 10)
+11 net = par.DistributedDataParallel( net )  # 唯一区别
+12 opt = optim.SGD(net.parameters() , lr =0.01)
+13
+14 # run forward pass
+15 inp = torch.randn (20 , 10)
+16 exp = torch.randn (20 , 10)
+17 out = net(inp)
+18
+19 # run backward pass
+20 nn.MSELoss()(out , exp ).backward ()
+21
+22 # update parameters
+23 opt.step ()
+```
+
+## 3.2 梯度减少（gradient reduction）
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DDP中的梯度减少算法在过去的版本中有所发展。为了介绍当前实现的结构，让我们从一个简单的解决方案开始，逐渐引入更多的复杂性，并在PyTorch v1.5.0中得到当前版本。这也将解释为什么在3.1节中描述的相同简单API允许我们安装各种性能优化算法。<br>
+
+### 3.2.1 一个简单的解决方案
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;正如在第3节开头提到的，DDP通过让所有训练进程(1)从相同的模型状态开始，(2)在每次迭代中使用相同的梯度来保证正确性。前者可以通过在DDP构造时将**模型状态**从一个进程**广播**到所有其他进程来实现。要实现后者，一个简单的解决方案可以在**本地反向传播之后、更新本地参数之前插入梯度同步阶段**。然而，3.1节中展示的API在这个阶段之间没有提供明确的入口，因为在backward()和step()之间没有任何内容。幸运的是，PyTorch的自动求导引擎接受自定义的反向传播钩子。DDP可以**注册自动求导钩子**，以**在每次反向传播后触发计算**。当钩子触发时(fired)，每个钩子都会扫描所有本地模型参数，并从每个参数中检索梯度张量。然后，它使用AllReduce集合通信调用在所有进程上计算每个参数的平均梯度，并将结果写回梯度张量中。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这个简单的解决方案对于我们的目的是足够的，但存在两个性能问题：
+- 集体通信(collective communication)在小张量上的性能较差，这在具有大量小参数的大型模型上尤为明显。
+- 将梯度计算和同步(synchronization)分开会失去在计算和通信之间进行重叠的机会，因为它们之间存在硬边界(hard boundary)。
+下面的章节将阐述解决上述两个问题的方法。<br>
+
+### 3.2.2 梯度分桶
+
+![figure2](images/ddp-figure2.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;梯度分桶的思想源于一个观察结果，即集体通信在大张量上的效率更高。图2(a)和(b)提供了一个定量的观点，展示了使用不同参数数量进行AllReduce的总执行时间，其中包括60M个torch.float32参数。为了最大化带宽利用率，**所有的AllReduce操作都是异步启动的（launched asynchronously）**，并且一起等待所有操作完成，模拟DDP的梯度减少算法。实验是在一台启用了NVLink [3]的服务器上进行的，配备了两个NVIDIA Quadro GP100 GPU。NCCL[2] AllReduce直接在CUDA输入张量上运行，而Gloo[1] AllReduce在CPU输入张量上运行，以消除**使用Gloo后端时在CUDA内存和CPU内存之间复制**的开销。从图中可以清楚地看到，对于NCCL和Gloo，使用更大的输入张量时总的通信时间显著减少。Gloo在每个输入张量大约500K个参数时达到最高速度，而对于具有20M参数GPU张量的NVLink上的NCCL来说，没有明显的饱和信号。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这些实验表明，DDP可以在每个梯度张量可用时不立即启动专用的AllReduce，而是等待一段时间，将多个梯度分桶到一个AllReduce操作中，从而实现更高的吞吐量和更低的延迟。这对于具有许多小参数的模型尤其有帮助。然而，DDP不应该在一个单独的AllReduce中通信所有的梯度，否则在计算结束之前将无法开始通信。图2(c)和(d)显示了包含大约60M参数的ResNet152[20]的GPU和CPU反向计算时间。X轴是准备好的梯度数量，Y轴是自反向传播开始以来经过的时间。在**GPU上的反向传播大约需要250毫秒才能完成，与NVLink上的NCCL的时间量级相同**。这个结论也适用于Gloo和CPU的反向传播。这些测量结果表明，通过使用相对较小的桶大小，DDP可以在后向传播过程中并行启动AllReduce操作，以实现通信与计算的重叠，这将在每次迭代的延迟上产生差异。<br>
+
+
+
+
+
 
 
 
