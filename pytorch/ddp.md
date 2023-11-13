@@ -126,15 +126,68 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;一种常见的加速分布式数据并行训练的技术是减少梯度同步的频率。应用程序可以在每次迭代之前进行**n次本地训练迭代**，而不是在每次迭代中都启动AllReduce操作，然后再进行全局梯度同步。如果输入批次过大而无法适应设备，这也会很有帮助。在这种情况下，应用程序可以将一个输入批次分成多个微批次(micro-batch)，在每个微批次上运行本地的前向和反向传播，并仅在大批次的边界处启动梯度同步。从理论上讲，这应该产生与一次处理大批次中的所有数据相同的结果，因为**梯度将简单地累积到同一个张量中**。然而，这在一定程度上与第3.2.3节中讨论的梯度规约算法存在冲突。该算法会在每次前向传递结束时将未使用的参数标记为就绪状态，而在一个迭代中未使用的参数仍然可以参与后续的迭代。此外，DDP无法区分应用程序是否计划在反向传播后立即调用optimizer.step()函数，还是通过多次迭代累积梯度。因此，我们需要为这种情况引入一个额外的接口（即no sync）。下面是一个示例代码片段。<br>
 
 ```python
-1 ddp = DistributedDataParallel ( net )
-2 with ddp . no_sync () :
-3 for inp , exp in zip ( inputs , expected_outputs ):
-4 # no synchronization , accumulate grads
-5 loss_fn ( ddp ( inp ) , exp ). backward ()
+1 ddp = DistributedDataParallel(net)
+2 with ddp.no_sync():
+3   for inp, exp in zip(inputs, expected_outputs):
+4      # no synchronization, accumulate grads
+5      loss_fn (ddp(inp), exp).backward()
 6 # synchronize grads
-7 loss_fn ( ddp ( another_inp ) , another_exp ). backward ()
-8 opt . step ()
+7 loss_fn(ddp(another_inp), another_exp).backward()
+8 opt.step()
 ```
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;底层实现中，no sync 的实现非常简单。上下文管理器在进入和退出上下文时只是切换一个标志，并且该标志在 DDP 的前向函数中被使用。在 no sync 模式下，**所有的 DDP 钩子都被禁用**，而上下文之外的第一次反向传播将会将累积的梯度进行同步(sync)。全局未使用参数的信息也会在位图(bit-map)中累积，并在下一次通信发生时使用。<br>
+
+## 3.3 集体通信
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;分布式数据并行(DDP)训练使用了一种特殊的通信模式，每个参与者都提供一个大小相同的张量，并在所有参与者之间收集全局总和。这可以被实现为一个 gather 操作，然后使用点对点通信在每个参与者上进行本地归约，但这将放弃性能优化的机会[22]。DDP 构建在集体通信库之上，包括三个选项，NCCL [2]、Gloo [1] 和 MPI [4]。DDP 采用了这三个库的 API，并将它们封装成相同的 ProcessGroup API。这个名称预示(heralds) ProcessGroup 期望**多个进程作为一个组来共同工作**。所有 ProcessGroup 实例同时构造，这是使用一个约会(rendezvous)服务实现的，第一个到达的实例将阻塞等待，直到最后一个实例加入。对于 NCCL 后端，ProcessGroup 维护了**一组专用的 CUDA 流用于通信**，这样它就**不会阻塞**在**默认流中的计算**。由于所有通信都是集体操作(collective operations)，所有 ProcessGroup 实例上的后续操作必须匹配大小和类型，并遵循相同的顺序。使用相同的 ProcessGroup API 对所有库进行操作允许我们在相同的 DDP 实现下尝试不同的通信算法。例如，PyTorch v1.5 提供了一个组合的轮询() ProcessGroup 实现，它接受一个 ProcessGroup 实例列表，并以循环(round-robin)的方式将集体通信分派给这些 ProcessGroup 实例。通过使用循环(round-robin) ProcessGroup，如果单个 NCCL、Gloo 或 MPI ProcessGroup 无法饱和链路容量，DDP 可以实现更高的带宽利用率。<br>
+
+# 4 实现
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DDP 的实现在过去的几个版本中进行了多次演进(evolved)。本节重点介绍 PyTorch v1.5.0 的当前状态。DDP 的实现同时存在于 Python 和 C++ 文件中，Python 提供 API 并组合非性能关键的组件，而 C++ 则提供**核心**的梯度归约算法(core gradient reduction algorithm)。Python API 通过 Pybind11 [5] 调用 C++ 核心。<br>
+
+## 4.1 Python 前端
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DDP 的 nn.module 实现在 **distributed.py** 中，其中包含用户接口组件，包括构造函数、前向函数和无同步(no sync)上下文管理器。除了在第3节中强调的一般思想之外，Python 前端还有一些实现细节来塑造 DDP 的行为。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**可配置的旋钮（Configuable Knobs）** 被暴露在 DDP 构造函数 API 中。其中包括：
+1. process_group：用于指定 DDP 运行 AllReduce 的进程组实例，这有助于避免对默认进程组造成干扰。
+2. bucket_cap_mb：用于控制 AllReduce 的桶大小，应用程序应根据训练速度优化调整此参数。
+3. find_unused_parameters：用于切换(toggle) DDP 是否通过遍历自动求导图检测未使用的参数。  
+本地模型中的模型设备关联性也会影响 DDP 的行为，特别是当模型跨多个设备时。当模型太大无法放入单个设备时，通常会出现这种情况。对于大型模型，应用程序可以将模型的不同层放置在不同的设备上，并使用 Tensor.to(device) API 将中间输出从一个设备移动到另一个设备。**DDP 也适用于多设备模型**。只要设备标识参数是 None 或空列表，**DDP 将检查模型，执行完整性(sanity)检查，并相应地进行配置**。然后，它将多设备模型视为一个整体。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;模型缓冲区(buffers)在需要跟踪状态（如运行方差running-var和运行均值running-meaning）的层（例如 BatchNorm）时是必需的。DDP 通过让排名为 0 的进程拥有权限来支持模型缓冲区。如果模型包含缓冲区，DDP 将在本地模型上开始 forward pass前将缓冲区值从rank为 0 的进程广播到所有其他进程。这种行为也与无同步(no-sync)模式兼容。当启用无同步模式时，在前向传递中正确设置一个标志(flag)，以指示是否期望在紧接的反向传递中进行梯度归约。如果进行通信，DDP 将在后续的前向传递之前**广播缓冲区**。<br>
+
+## 4.2 核心梯度归约
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在 DDP 中，主要的开发工作都花在梯度归约上，因为它是性能最关键的步骤。实现位于 **reducer.cpp** 中，由四个主要组件组成: <br>
+- 构建参数到桶的映射、
+- 安装 autograd 钩子、
+- 启动桶 AllReduce、
+- 检测全局未使用参数。
+本节详细介绍这四个组件。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**参数到桶的映射(Parameter-to-Bucket Mapping)** 对 DDP 的速度有重要影响。在**每次反向传递中**，张量从所有参数梯度**复制到桶中**，并在 AllReduce 后将平均梯度**复制回来**。为了加速复制操作，**桶总是在与参数相同的设备上创建**。如果模型跨多个设备，DDP 会考虑设备关联性(affinity)，确保**同一桶中的所有参数在同一设备上**。AllReduce 的顺序也会产生影响(model.parameters()相反顺序)，因为它决定了通信与计算之间可以重叠多少。DDP 以 model.parameters() 的**相反顺序**启动 AllReduce。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**自动微分钩子(Autograd Hook)** 是 DDP 在反向传递(backward pass)中的入口点。在构造过程中，DDP 循环遍历模型中的所有参数，在每个参数上找到梯度累加器(gradient accumulator)，并将相同的后钩子函数(post-hook function)安装到每个梯度累加器上。当相应的梯度准备好时，梯度累加器将**触发后钩子函数(post-hook)**，而 DDP 将确定何时启动整个桶的 AllReduce 操作。然而，由于不能保证梯度准备的顺序，DDP 无法选择性地选择参数来安装钩子。在当前的实现中，**每个桶都保持着待处理梯度的计数**。每个后钩子函数会使计数递减，当计数达到零时，DDP 标记该桶为准备就绪。在下一次前向传递中，DDP 会为每个桶**重新设置待处理梯度的计数**。 <br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**Bucket AllReduce** 是 DDP 中通信开销的主要来源。一方面，将更多的梯度打包到同一个桶中可以减少通信的平均系统开销。另一方面，使用较大的桶大小会导致更长的归约时间，因为每个桶需要等待更多的梯度。因此，**桶大小是一个关键的权衡因素**。默认情况下，每个桶的大小为**25MB**。应用程序应该根据自己的使用情况经验性地衡量其影响，并将其设置为最优值。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在前向传递和反向传递过程中，**全局未使用参数(Globally Unused Parameters)** 的梯度应该保持不变。检测未使用的参数需要全局信息，因为一个参数在一个迭代中可能在**一个 DDP 进程中不存在**，但在**另一个进程中却参与了**同一迭代的训练。DDP 在位图(bit-map)中维护本地(local gpu)未使用参数的信息，并启动**额外**的 AllReduce 来收集**全局位图**。由于位图比张量大小要小得多，DDP 不会为每个桶创建位图，而是模型中的**所有参数共享相同的位图**。**位图存在于 CPU 上**，避免为每次更新启动专用的 CUDA 内核。然而，某些 ProcessGroup 后端可能无法在 CPU 张量上运行 AllReduce。例如，ProcessGroupNCCL 仅支持 CUDA 张量。此外，由于 DDP 应该与任何自定义的 ProcessGroup 后端一起工作，它不能假设所有后端都支持 CPU 张量。为了解决这个问题，DDP **在与第一个模型参数相同的设备上维护另一个位图**，并调用非阻塞复制将 **CPU 位图移动到设备位图**以进行集体通信。<br>
+
+# 5. 评估
+
+![figure5](images/ddp-figure5.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;本节介绍使用具有独占的 32 GPU 集群(4-server-cluster)和共享配额的 PyTorch DDP 的评估结果。在独占集群(exclusive cluster)中，GPU 位于 4 台服务器上，使用 Mellanox MT27700 ConnectX-4 100GB/s 网卡进行连接。这 4 台服务器位于同一个机架(rack)上，每台服务器配备有 8 个 NVIDIA Tesla V100 GPU。图 5 显示了同一台服务器内 8 个 GPU 的互连情况。只有在一组实验需要超过 32 个 GPU 时，我们才使用共享配额(shared entitlement)。在共享配额中，我们提交的作业可以在不同数量的 GPU 上运行，不同的作业可以在不同的机器上运行，因此硬件和网络连接性可能因作业而异。尽管测试环境的差异可能导致相同代码的不同延迟测量，但我们将相同的一组实验打包到同一个作业中，以便同一条曲线中显示的趋势仍然具有意义。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们使用两个流行的模型 ResNet50 [20] 和 BERT [15] 来表示典型的视觉和自然语言处理（NLP）应用，对 DDP 进行每次迭代的延迟和可伸缩性测量。大多数实验使用随机生成的合成输入和标签，这足以进行每次迭代延迟的比较，而不是模型准确性。实验使用 CrossEntropyLoss 函数计算损失，并使用 SGD 优化器更新参数。与准确性相关的实验配置将在它们的介绍附近详细解释。<br>
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
