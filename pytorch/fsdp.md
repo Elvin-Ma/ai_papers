@@ -69,8 +69,21 @@
 ![figure2](images/fsdp-figure2.jpg)
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们进行了两组实验，以了解**输入大小**对集合通信效率的影响。结果如图2所示，这有助于确定两个效率的要素：
-1. **均匀输入大小**：Nvidia NCCL [22]库为all-gather和reduce-scatter提供了高效的集合实现，这要求在排名之间具有均匀的输入张量大小。
-2. **更大的输入大小**：对于固定的通信量，批处理数据并发出较少的集合操作可以通过避免集合操作的**启动开销**并增加网络带宽利用率来提高性能。
+1. **均匀输入大小**：Nvidia NCCL [22]库为all-gather和reduce-scatter提供了高效的集合实现，这要求在rank之间具有均匀的输入张量大小。
+2. **更大的输入大小**：对于固定的通信量，应用批处理数据从而发出较少的集合操作，可以通过避免集合操作的启动开销并增加网络带宽利用率来提高性能。
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于（1），NCCL的AllGather API要求**输入张量大小为均等**，并将输出写入一个**单一的张量中**。PyTorch的 **ProcessGroup** 封装了NCCL API，并通过支持rank之间不均匀的输入张量大小以及允许用户提供输出张量列表来**增强它**。这种灵活性会带来效率上的权衡（丢失），如图2(a)所示。我们使用All-Gather Base来表示NCCL的AllGather行为，并使用All-Gather来表示接受一个张量列表作为输出的行为。后者在通信之前和之后，在各个输出张量和合并后的单个大输出张量之间进行**额外的复制**。此外，对于不均匀的输入，ProcessGroup使用**群组广播**来模拟AllGather的行为，这比All-Gather Base更慢。在实验中，我们通过将1个元素和1e6个元素分别从排名1移动到排名0来创建人为的不均匀性。结果显示，具有均匀输入大小的All-Gather Base实现了最高的效率。<br>
+*(注释：NCCL 要求all-gather的张量必须相当，但pytorch 的processGroup不要求，通过其它策略绕过限制)* <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于（2），图2（b）将总通信量固定为2^30≈1B个FP32元素，并改变每个All-Gather的大小，即较小的AllGather大小意味着更多的AllGather调用。一旦All-Gather大小降低到33M个元素以下，总通信时间开始迅速增加。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;因此，为了实现高效的通信，FSDP将一个FSDP unit中的所有参数组织成一个大的FlatParameter。FlatParameter将其各个参数的通信合并，并在rank之间均匀分片。具体而言，FlatParameter是通过连接𝑝个扁平化的原始参数构建的**一维张量**，并在Tensor右侧填充(padding zero)以实现可被分片因子整除的大小。为了对FlatParameter进行分片，FSDP将其分成相等大小的块，块的数量等于分片因子F，并为每个rank分配一个块。FlatParameter的梯度继承自FlatParameter的未分片和分片形状，而FlatParameter和其梯度(gradient)分别拥有原始参数及其梯度的**底层存储**。图3展示了一个示例，其中我们使用一个FSDP单元将一个4×3的nn.Linear层分片到16个GPU上。在这种情况下，每个GPU只保存FlatParameter中的一个元素，最后一个rank保存填充值(padding value)。
+
+![figure3](images/fsdp-figure3.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种扁平化-连接-分块(flatten-concat-chunk)算法允许每个原始参数具有任意形状，同时最小化所需的填充(最多为𝐹-1)，体现了其通用性。此外，在这种算法下，分片和未分片的FlatParameter及其梯度与AllGather和ReduceScatter分别期望的数据布局完全一致。这使得可以在输入张量和输出张量上调用集合操作，而无需进行任何额外的复制操作。
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;更正式地说，假设对于一个具有Ψ个元素的模型，FSDP构建了𝑁个FlatParameter，其元素数量分别为 $𝜓_{1}, \dots, 𝜓_{𝑁}$ , 其中 $\sum_{i=1}^{N} \psi=\Psi$ 。对于分片因子𝐹，参数内存的峰值贡献为 $O(\sum_{i=1}^{N} \frac{\psi_{i}}{F}+\max _{i=1}^{N} \psi_{i})$ ，因为FSDP始终将每个本地分片的FlatParameter的大小保持为 $\frac{𝜓_{𝑖}}{F}$ ，并且在前向和反向传播过程中必须逐个生成每个未分片的FlatParameter，其大小为 $𝜓_{𝑖}$ 。由于第一个 $\sum_{i=1}^{N} \psi_{i}=\Psi$ 是固定的，参数内存的峰值贡献由 
+ $max^{𝑁}_{𝑖=1} 𝜓_{𝑖}$ 决定。同时，每次迭代的集合操作**数量为𝑂(𝑁)**。这说明了FSDP的内存吞吐量权衡：细粒度的FlatParameter构建减少了峰值内存，但可能通过需要更多的集合操作来降低吞吐量。用户可以通过指定如何将子模块包装到FSDP单元中来控制这种权衡。<br>
+ 
 
 
