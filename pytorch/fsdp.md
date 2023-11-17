@@ -82,8 +82,7 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种扁平化-连接-分块(flatten-concat-chunk)算法允许每个原始参数具有任意形状，同时最小化所需的填充(最多为𝐹-1)，体现了其通用性。此外，在这种算法下，分片和未分片的FlatParameter及其梯度与AllGather和ReduceScatter分别期望的数据布局完全一致。这使得可以在输入张量和输出张量上调用集合操作，而无需进行任何额外的复制操作。
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;更正式地说，假设对于一个具有Ψ个元素的模型，FSDP构建了𝑁个FlatParameter，其元素数量分别为 $𝜓_{1}, \dots, 𝜓_{𝑁}$ , 其中 ${\textstyle \sum_{i=1}^{N}}$ 。对于分片因子𝐹，参数内存的峰值贡献为 $O(\sum_{i=1}^{N} \frac{\psi_{i}}{F}+\max _{i=1}^{N} \psi_{i})$ ，因为FSDP始终将每个本地分片的FlatParameter的大小保持为 $\frac{𝜓_{𝑖}}{F}$ ，并且在前向和反向传播过程中必须逐个生成每个未分片的FlatParameter，其大小为 $𝜓_{𝑖}$ 。由于第一个 $\sum_{i=1}^{N} \psi_{i}=\Psi$ 是固定的，参数内存的峰值贡献由 
- $max^{𝑁}_{𝑖=1} 𝜓_{𝑖}$ 决定。同时，每次迭代的集合操作**数量为𝑂(𝑁)**。这说明了FSDP的内存吞吐量权衡：细粒度的FlatParameter构建减少了峰值内存，但可能通过需要更多的集合操作来降低吞吐量。用户可以通过指定如何将子模块包装到FSDP单元中来控制这种权衡。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;更正式地说，假设对于一个具有Ψ个元素的模型，FSDP构建了𝑁个FlatParameter，其元素数量分别为 $𝜓_{1}, \dots, 𝜓_{𝑁}$ , 其中 ${\sum_{1}}^{N} \psi = \Psi$ . 对于分片因子𝐹，参数内存的峰值贡献为 $O( {\sum_{i=1}}^{N} \frac{\psi_{i}}{F} + {max_{i=1}}^{N} \psi_{i})$ ，因为FSDP始终将每个本地分片的FlatParameter的大小保持为 $\frac{𝜓_{𝑖}}{F}$ ，并且在前向和反向传播过程中必须逐个生成每个未分片的FlatParameter，其大小为 $𝜓_{𝑖}$ 。由于第一个 ${\sum_{i=1}}^{N} \psi_{i}=\Psi$ 是固定的，参数内存的峰值贡献由 ${max_{𝑖=1}}^{𝑁} 𝜓_{𝑖}$ 决定。同时，每次迭代的集合操作**数量为𝑂(𝑁)**。这说明了FSDP的内存吞吐量权衡：细粒度的FlatParameter构建减少了峰值内存，但可能通过需要更多的集合操作来降低吞吐量。用户可以通过指定如何将子模块包装到FSDP单元中来控制这种权衡。<br>
  
 
 
