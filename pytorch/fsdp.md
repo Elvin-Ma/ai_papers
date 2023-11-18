@@ -61,7 +61,7 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如图1所示，一旦FSDP装饰了模型，它将均匀分布在所有GPU上，每个设备在其内存中只保存一个分片。因此，为了解决第二个挑战，每个排名理想情况下只能matierialize和初始化自己拥有的分片。然而，这并不总是实际可行的，因为我们无法预测用户将在模型初始化方法中实现什么样的初始化逻辑。初始化逻辑可能依赖于在设备上有一个未分片的参数，这使得无法对初始化进行分片。因此，FSDP必须在执行张量初始化操作之前**准备未分片的参数，并同时减少内存占用**。鉴于分片初始化是不安全的，FSDP采用了与处理模型前向和反向传递相同的方法，即**一次只初始化一个FSDP单元**，并在转到下一个单元之前对单元进行分片(shard)。当与延迟(deferred)初始化结合使用时，FSDP遍历虚拟设备模型实例，将其分解为FSDP单元，一次将一个单元移动到GPU设备，并为该FSDP单元中的张量重播(replays)记录的初始化操作。<br>
 
 ## 3.2 分片策略
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;分片策略是FSDP中的一个重要因素，它在确定内存占用(memory footprint)和通信开销方面起着重要作用。FSDP提供了多种分片策略，从完全复制到完全分片都有。为了概括这些分片策略，我们引入了分片因子𝐹，它表示参数分片的排名数(ranks)。将分片因子设置为1时，FSDP完全复制模型，并简化为使用AllReduce进行梯度归约的普通数据并行。将分片因子设置为设备数量（即全局大小𝑊）时，FSDP完全分片模型，每个设备只保存模型的1/𝑊部分。当分片因子介于1和𝑊之间时，发生混合分片。本节的其余部分将重点介绍全分片和混合分片，因为完全复制策略类似于现有的DDP [14]。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;分片策略是FSDP中的一个重要因素，它在确定内存占用(memory footprint)和通信开销方面起着重要作用。FSDP提供了多种分片策略，从完全复制到完全分片都有。为了概括这些分片策略，我们引入了**分片因子𝐹，它表示参数分片的排名数(ranks)**。将分片因子设置为1时，FSDP完全复制模型，并简化为使用AllReduce进行梯度归约的普通数据并行。将分片因子设置为设备数量（即全局大小𝑊）时，FSDP完全分片模型，每个设备只保存模型的1/𝑊部分。当分片因子介于1和𝑊之间时，发生混合分片。本节的其余部分将重点介绍全分片和混合分片，因为完全复制策略类似于现有的DDP [14]。<br>
 
 ### 3.2.1 全分片策略
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;全分片策略会导致最低的内存占用，但会产生最大的通信开销，例如，如果使用带宽最优的环形算法，全分片的通信开销和DDP相比会增加**1.5倍**。因此，FSDP必须仔细组织通信，以在这种策略下最大限度地提高其效率。<br>
@@ -83,6 +83,43 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种扁平化-连接-分块(flatten-concat-chunk)算法允许每个原始参数具有任意形状，同时最小化所需的填充(最多为𝐹-1)，体现了其通用性。此外，在这种算法下，分片和未分片的FlatParameter及其梯度与AllGather和ReduceScatter分别期望的数据布局完全一致。这使得可以在输入张量和输出张量上调用集合操作，而无需进行任何额外的复制操作。
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;更正式地说，假设对于一个具有Ψ个元素的模型，FSDP构建了𝑁个FlatParameter，其元素数量分别为 $𝜓_{1}, \dots, 𝜓_{𝑁}$ , 其中 ${\sum_{1}}^{N} \psi = \Psi$ . 对于分片因子𝐹，参数内存的峰值贡献为 $O( {\sum_{i=1}}^{N} \frac{\psi_{i}}{F} + {max_{i=1}}^{N} \psi_{i})$ ，因为FSDP始终将每个本地分片的FlatParameter的大小保持为 $\frac{𝜓_{𝑖}}{F}$ ，并且在前向和反向传播过程中必须逐个生成每个未分片的FlatParameter，其大小为 $𝜓_{𝑖}$ 。由于第一个 ${\sum_{i=1}}^{N} \psi_{i}=\Psi$ 是固定的，参数内存的峰值贡献由 ${max_{𝑖=1}}^{𝑁} 𝜓_{𝑖}$ 决定。同时，每次迭代的集合操作**数量为𝑂(𝑁)**。这说明了FSDP的内存吞吐量权衡：细粒度的FlatParameter构建减少了峰值内存，但可能通过需要更多的集合操作来降低吞吐量。用户可以通过指定如何将子模块包装到FSDP单元中来控制这种权衡。<br>
- 
+
+### 3.2.2 混合分片(Hybrid Sharding)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当分片因子大于1但小于𝑊(gpu 个数)时，我们将其称为混合分片策略，因为它同时结合了分片和复制。对于全局 world 大小(global world size)𝑊和分片因子𝐹，参数在每个组 $𝑆_{1}, \dots, 𝑆_{\frac{𝑊}{𝐹}}$ **内**进行分片，并在每个互补组 $𝑅_{1}, \dots, 𝑅_{𝐹}$ 内进行复制，其中每个𝑆𝑖，𝑅𝑗 ⊆ {1, . . . ,𝑊 }表示分片或复制组中的排名。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于梯度归约，所有rank之间的单个Reduce-Scatter变为在每个分片组(sharded groups)内进行Reduce-Scatter，然后在每个复制组(replicated groups)内进行全局归约来reduce分片梯度。这种等效性来自以下分解过程。<br>
+
+![formula1](images/fsdp-formula1.jpg)
+
+其中， $𝑔_{𝑟}$ 表示rank为𝑟的梯度。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;混合分片可以利用**数据中心的局部性**进行加速训练，并**减少跨主机的流量**，以尽量避免在过度订阅(over-subscribed)的环境中产生竞争。同时，它提供了在内存节省和吞吐降低之间逐渐权衡(trade-off)的选择，这对于那些在完全复制训练时所需的内存占用**略高于**设备容量且不希望进行完全分片的模型特别有帮助。（图4展示了一个示例）<br>
+
+![figure4](images/fsdp-figure4.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;具体而言，数据中心通常采用具有过度订阅(over-subcription)的Fat-Tree网络拓扑结构[16]，从而具有丰富的局部性可供利用，并且有充分的理由减少跨主机的流量[17]。混合分片可以提供一种自然机制，将设备网格映射到数据中心布局中以利用这种局部性。例如，考虑一个集群，将一个集群视为𝑊个加速器分组成每个主机包含𝐺个加速器的组（同一主机上的加速器之间的通信比跨主机的通信要快得多），我们可以设置 $𝐹 = \frac{𝑊}{𝐺}$ ）*(表示有几个切片组，而不是每个组中有几个切片)*，以限制同一主机内的所有all-gather和Reduce-Scatter操作，并为不同主机之间的相同 local rank的加速器之间创建一个复制组。对于大小为𝑀的模型，在混合设置中，我们可以计算每个GPU的总**跨主机流量**为 $2𝑀\frac{𝑊−1}{𝐺𝑊}$ ，与完全复制的 $2𝑀\frac{𝑊−1}{𝑊}$ 和完全分片的 $3𝑀\frac{𝑊−1}{𝑊}$ 相比，这是一个显著的降低。此外，由于混合分片中使用的AllReduce集合操作在较小的全局规模上运行，经验证明其性能优于在全局规模上调用集合(collective)操作（full replication 和 full sharding的情况下），这是由于滞后者效应和更大的网络干扰所导致的。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;混合分片的另一个重要设计动机是满足中等大小模型的需求。这些模型足够大，当使用完全复制进行训练时可能导致内存不足的问题，但又不足以充分利用加速器内存，而完全分片会导致运行时开销和内存浪费。混合分片策略通过简单调整 𝐹 来创造一个更丰富的内存吞吐权衡空间。<br>
+
+### 3.2.3 自动求导
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP的FlatParameter必须与PyTorch的自动求导引擎进行交互，以确保以下两点：（1）正确的梯度传播和（2）及时的梯度归约。对于（1），需要注意的是FlatParameter及其梯度分别拥有原始参数和它们的梯度的**底层存储**。为了实现这一点，在正向计算之前，FSDP使用autograd可见的torch.split()和torch.view()函数将原始参数设置为其未分片的FlatParameter的视图。然后，自动求导引擎自然地分配未分片的FlatParameter梯度，并将每个原始参数的梯度写入由torch.split()的反向函数定义的适当偏移量。对于（2），FSDP注册了一个梯度钩子，该钩子仅在FlatParameter的梯度最终确定后运行。该钩子代表了后向逻辑，并包括梯度归约。值得注意的是，FSDP的方法是构建在PyTorch的自动求导引擎之上，而不是对其进行修改。因此，FSDP可以自动处理非常规情况，例如在前向传播中没有使用所有参数或者在后向传播之前存在多个前向传播的情况。<br>
+
+## 3.3 通信优化
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP框架结合了一系列本地(native)通信优化技术。本节介绍了四个主要的优化技术：重叠通信、向后预取、向前预取和累积。<br>
+
+### 3.3.1 重叠通信与计算
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PyTorch的c10d库提供了ProcessGroup抽象，表示可以一起运行集合操作(collective operation)的一组进程。对于NCCL后端，ProcessGroupNCCL实现每个设备都有一个**内部的NCCL流**，其中单独的内部流用于与当前流进行异步执行，**当前流通常是运行计算的默认流**。这些异步集合操作返回Work对象，调用Work.wait()会阻塞CPU线程，直到集合操作完成。为了确保正确性，ProcessGroupNCCL在运行集合操作之前会将内部流与当前流进行同步。**DDP利用异步集合操作和等待的方法**，将梯度的全局归约与后向计算进行重叠。然而，与DDP的后向计算将all-reduce与计算重叠的方式不同，**FSDP的前向计算在计算完成后发起all-gather操作(合并weight)**，因为在eager 模式下，FSDP无法事先知道下一个要reorder的FlatParameter。这种 kernel 发出顺序上的差异使得按照异步集体操作和等待的方法对FSDP来说不可行。换句话说，由于ProcessGroupNCCL与当前（默认）流进行同步，all-gather操作将等到与其重叠的计算完成后才会运行。为了解决这个问题，**FSDP使用单独的CUDA流来发起all-gather操作，绕过默认流中对先前计算的错误依赖**，并允许每个all-gather操作进行重叠。因此，**FSDP的collective operation sync操作是针对流而不仅仅是Work对象的**。图5展示了一个示例。请注意，后向传播不包括AG0(见图5) 的 allgather操作，因为FSDP有意将最外层FSDP单元的参数保留在内存中，以避免在前向传播结束时冗余释放，然后重新进行全局聚集操作以开始后向传播。<br>
+*（ProcessGroup：可以进行集合操作的一组进程）* <br> 
+
+![figure5](images/fsdp-figure5.jpg)
+
+### 3.3.2 向后预取(backward prefetching)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP在**每个进程中强制使用单个CUDA设备**，并为All-Gather和Reduce-Scatter使用**单个进程组**，这意味着其集合操作在进程组的内部NCCL流中按顺序运行。在backward pass中，FSDP首先发起当前FlatParameter的Reduce-Scatter操作(对梯度？？？)，然后发起下一个FlatParameter的All-Gather操作。因此，单个NCCL流会导致Reduce-Scatter阻塞下一个All-Gather操作，进而阻塞下一个梯度计算，并可能在关键路径上暴露出来。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了避免在backward pass中暴露两个连续的通信调用(communication calls)，FSDP的向后预取在当前Reduce-Scatter之前发起(issues)下一个All-Gather操作。然而，如前所述，对于即时执行(eager execution)来说，一个挑战是知道下一个要进行all-gather的FlatParameter是哪个? FSDP通过将模块的reverse执行顺序记录为其backward pass 执行顺序的代理(proxy)来解决了这个挑战 *(注释：就是前向传播的相反顺序)* 。此外，正向顺序在每次迭代时都会重新记录，这意味着向后预取与迭代之间的动态特性是兼容的。<br>
+
+
+
+
+
 
 
