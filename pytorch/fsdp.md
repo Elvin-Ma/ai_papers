@@ -114,12 +114,18 @@
 ![figure5](images/fsdp-figure5.jpg)
 
 ### 3.3.2 向后预取(backward prefetching)
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP在**每个进程中强制使用单个CUDA设备**，并为All-Gather和Reduce-Scatter使用**单个进程组**，这意味着其集合操作在进程组的内部NCCL流中按顺序运行。在backward pass中，FSDP首先发起当前FlatParameter的Reduce-Scatter操作(对梯度？？？)，然后发起下一个FlatParameter的All-Gather操作。因此，单个NCCL流会导致Reduce-Scatter阻塞下一个All-Gather操作，进而阻塞下一个梯度计算，并可能在关键路径上暴露出来。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP在**每个进程中强制使用单个CUDA设备**，并为All-Gather和Reduce-Scatter使用**单个进程组**，这意味着其集合操作在进程组的内部NCCL流中按顺序运行。在backward pass中，FSDP首先发起当前FlatParameter的Reduce-Scatter操作 *(每个加速器上都会计算出完整的梯度，然后reduce-scatter)* ，然后发起下一个FlatParameter的All-Gather操作。因此，单个NCCL流会导致Reduce-Scatter阻塞下一个All-Gather操作，进而阻塞下一个梯度计算，并可能在关键路径上暴露出来。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了避免在backward pass中暴露两个连续的通信调用(communication calls)，FSDP的向后预取在当前Reduce-Scatter之前发起(issues)下一个All-Gather操作。然而，如前所述，对于即时执行(eager execution)来说，一个挑战是知道下一个要进行all-gather的FlatParameter是哪个? FSDP通过将模块的reverse执行顺序记录为其backward pass 执行顺序的代理(proxy)来解决了这个挑战 *(注释：就是前向传播的相反顺序)* 。此外，正向顺序在每次迭代时都会重新记录，这意味着向后预取与迭代之间的动态特性是兼容的。<br>
 
+### 3.3.3 向前预取(Forward Prefetching)
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于一些具有相对较慢CPU执行的工作负载，CPU线程可能无法及时发起下一个前向all-gather操作以有效填充NCCL流。如果模型在迭代之间遵循静态计算图，那么FSDP可以假设模块的前向执行顺序来自**上一次迭代**，并在前向传播中显式地预取(prefetch)下一个all-gather操作。这种向前(prefetching)预取在当前FSDP单元的**前向计算之前发起下一个全局聚集操作**。<br>
 
+### 3.3.4 梯度累积
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP提供了两种梯度累积的变体(variations)：带通信和不带通信。带通信的梯度累积中，FSDP仍然在各个进程之间进行梯度归约，并且每个进程保存分片的梯度。只需连续运行多个迭代而不清除梯度即可实现这一点。没有通信的梯度累积中，FSDP不会在进程之间进行梯度归约，而是每个进程保存未分片的梯度(unsharded gradients)。后一种变体在增加内存使用的同时减少了通信，这可以增加端到端的吞吐量。<br>
 
+## 3.4 内存管理
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PyTorch使用CUDA缓存分配器作为中间层，为PyTorch程序提供GPU分配和释放请求服务。为了有效管理内存，FSDP使用速率限制器来考虑缓存分配器对使用多个CUDA流和运行快速CPU线程的程序的内存影响。<br>
 
 
 
