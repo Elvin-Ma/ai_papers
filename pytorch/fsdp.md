@@ -125,7 +125,20 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP提供了两种梯度累积的变体(variations)：带通信和不带通信。带通信的梯度累积中，FSDP仍然在各个进程之间进行梯度归约，并且每个进程保存分片的梯度。只需连续运行多个迭代而不清除梯度即可实现这一点。没有通信的梯度累积中，FSDP不会在进程之间进行梯度归约，而是每个进程保存未分片的梯度(unsharded gradients)。后一种变体在增加内存使用的同时减少了通信，这可以增加端到端的吞吐量。<br>
 
 ## 3.4 内存管理
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PyTorch使用CUDA缓存分配器作为中间层，为PyTorch程序提供GPU分配和释放请求服务。为了有效管理内存，FSDP使用速率限制器来考虑缓存分配器对使用多个CUDA流和运行快速CPU线程的程序的内存影响。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PyTorch使用CUDA缓存分配器作为中间层，为PyTorch程序提供GPU分配和释放请求服务。为了有效管理内存，FSDP使用速率限制器(rate limiter)来考虑缓存分配器对使用多个CUDA流和运行快速CPU线程的程序的内存影响。<br>
+
+### 3.4.1 PyTorch缓存分配器对内存的影响
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;缓存分配器避免频繁调用cudaMalloc和cudaFree，后者会产生昂贵的设备同步开销。具体而言，缓存分配器请求CUDA内存块，并在pytorch内部确定如何拆分和重复使用这些块，而不将它们返回给CUDA，目标是达到稳定状态，而无需进一步调用cudaMalloc和cudaFree。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**缓存分配器在CPU线程上运行**，这意味着当CPU线程处理分配请求时，它必须决定使用哪个缓存分配器块进行分配。它不能等到实际运行需要分配的GPU内核运行，这可能会发生得更晚。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于单个流程（stream），缓存分配器可以通过流程的顺序语义直接重用内存块。然而，对于独立的生产者和消费者流程，没有流程间的顺序保证，缓存分配器无法确定一个块是否安全可重用，直到依赖该内存的最后一个GPU内核完成运行。因此，如果CPU线程远远领先于GPU执行，那么缓存分配器无法为生产者流程重用具有待处理GPU kernel的消费者流程的块。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;此外，缓存分配器块是按stream分配的，不能为不同的stream重用，这导致为生产者流程过度分配了块(缓存了)，而这些块本可以用于消费者stream（例如用于激活）。GPU本身可能有足够的内存来为消费者stream提供新的分配，但是对生产者stream的过度分配可能导致缓存分配器无法为消费者stream提供服务了。这将强制执行一系列的cudaFrees来重置缓存分配器的内存状态，称为cudaMalloc retry，这会大大降低训练吞吐量。<br>
+
+### 3.4.2 速率限制器
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP在生产者stream中分配表示未分片的FlatParameter的All-Gather目标张量，而使用All-Gather参数进行的前向和反向计算在消费者stream中运行（通常是默认流程）。对于快速的CPU线程，在缓存分配器必须为下一个All-Gather提供服务时，可能存在待处理的GPU计算内核，导致无法重用块。即使这些块在AllGather生产者流程中不再活动，这些保留的块也无法为默认计算流程的分配请求提供服务，因此可能需要强制执行阻塞的cudaFrees和cudaMallocs。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP提供了一个速率限制器，**有意地阻塞CPU线程**，以确保正确的缓存分配器块重用。它允许最多两个正在进行的All-Gathers，这是**仍然**实现通信和计算重叠的最小数量。<br>
+
+
+
 
 
 
