@@ -137,8 +137,36 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP在生产者stream中分配表示未分片的FlatParameter的All-Gather目标张量，而使用All-Gather参数进行的前向和反向计算在消费者stream中运行（通常是默认流程）。对于快速的CPU线程，在缓存分配器必须为下一个All-Gather提供服务时，可能存在待处理的GPU计算内核，导致无法重用块。即使这些块在AllGather生产者流程中不再活动，这些保留的块也无法为默认计算流程的分配请求提供服务，因此可能需要强制执行阻塞的cudaFrees和cudaMallocs。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP提供了一个速率限制器，**有意地阻塞CPU线程**，以确保正确的缓存分配器块重用。它允许最多两个正在进行的All-Gathers，这是**仍然**实现通信和计算重叠的最小数量。<br>
 
+# 4 实现
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;本节深入(delves)探讨了FSDP实现的复杂性，尽管这些实现不会改变FSDP的核心算法，但在采用FSDP之前了解这些实现是至关重要的。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;用户可以通过两个API来访问FSDP，即FullyShardedDataParallel模型包装器和fully_shard模块注释器(annotator)。前者包装整个模型，并用相应的FSDP单元替换子模块(submodules)。相反，后者将FSDP逻辑安装为nn.Module的前向和反向钩子，同时保留模型结构和参数的完全限定名称。<br>
 
+## 4.1 初始化(依赖情况下的解决方案)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;第3.2.1节描述了FSDP在初始化大型模型时的高效解决方案，该方案在子模块初始化是自包含的情况下效果良好。在极少数情况下，如果一个子模块的初始化依赖于另一个子模块的参数，那么按需实例化和记录回放的方法可能会出现问题，因为该参数可能属于不同的FSDP单元，而其未分片版本可能已被丢弃以减少内存占用。因此，除了先进的**延迟初始化外（之前的方案）**，FSDP还提供了另外两个选项：<br>
+- **在GPU上初始化未分片模型**。模型初始化的内存需求可能小于训练过程中的内存需求，因为训练还涉及梯度、激活值和优化器状态。因此，如果训练步骤无法在单个GPU设备上执行，用户仍然可能在GPU上初始化整个模型并将其传递给FSDP。然后，应**在FSDP对模型进行分片之后实例化优化器**，以减少内存占用并与FSDP产生的分片梯度对齐。<br>
+- **在CPU上初始化未分片模型**。如果未分片模型的大小超过了GPU内存的容量，并且只能容纳在CPU内存中，那么在将其完全移动到GPU之前交给FSDP进行参数分片将变得不切实际。为了克服这个挑战，FSDP采用了流式处理的方法，**逐个单元地将模型迁移到GPU上**。到达GPU后，每个单元的参数**立即进行分片**，从而在处理下一个单元之前减少了内存开销。即使在初始化过程中存在**跨子模块的依赖关系**，这种方法仍然可行，因为整个未分片模型的所有参数都存在于CPU内存中。
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;请注意，上述两种方法都有各自的限制。第一种方法要求整个模型适（不包含优化器、梯度、激活值）应单个GPU设备，因此对于较大的模型来说是不可行的。另一方面，第二种方法可以处理更大的模型，因为**CPU具有更大的内存**。然而，与延迟初始化相比，这种方法可能会遇到较大的**减速**，这是由于CPU的内存带宽和并行化能力有限。鉴于这些观察结果，即使处理的模型大小落在前两种方法所涵盖的范围内，用户**仍可能更喜欢延迟初始化的方式**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了确定(delimit)每个FSDP unit的范围，用户可以选择通过在模型源代码中对子模块进行干扰性应用来使用FullyShardedDataParallel包装器，或者在实例化时提供一个自定义函数给auto_wrap_policy参数。选择最佳的包装方法通常需要进行一些**实验和测量**。<br>
 
+## 4.2 扁平参数
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FlatParameter类继承自nn.Parameter，并像nn.Parameter一样运行。FSDP实现了一个附带的FlatParamHandle类，负责管理各个FlatParameter实例。前端，无论是FullyShardedDataParallel还是fully_shard，**只通过FlatParamHandle与FlatParameters进行交互**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;一个FlatParameter在一个FSDP unit内为所有参数张量提供存储空间。FSDP单元的边界控制All-Gather和Reduce-Scatter的时机，直接影响整体FSDP的性能。在理想情况下，FSDP单元的边界应与模型执行顺序对齐。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP在构建时可以访问模型的静态nn.Module结构。幸运的是，尽管这个结构不能保证准确地表示模型的执行顺序，但模型作者通常会将层和更大的块转换为嵌套的nn.Module定义，这样可能自然地具有**所需的参数局部性**。FSDP可以利用这个结构来选择FlatParameter的构建方式。事实上，FSDP支持对nn.Module进行注释，并遵循一个简单的规则：**在被注释的nn.Module中的所有参数都被分配给一个FlatParameter**，**已经被分配的参数除外**。这个规则自然地适用于嵌套注释，其中块被注释并形成适当大小的FlatParameters，任何剩余的参数都被分配给它们的父级。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们尝试的**另一种方法**是使用执行顺序动态重建FlatParameters。这种方法从一个初始的小型FlatParameter构建开始，在观察执行顺序的同时运行可能效率低下的第一次迭代，并根据观察到的顺序将现有的小型FlatParameters**合并重构成**FlatParameters。<br>
 
+## 4.3 运行时
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP通过加入通信操作来增强(incorporating)本地模型实例，以reduce梯度并gather参数。及时启动这些操作对于确保正确性和效率至关重要。如果通信操作启动得太早，会导致尚未更新的参数或梯度被消耗掉，而如果通信操作启动得太晚，会浪费网络带宽并延迟后续计算。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了在模型的前向传播中插入与通信相关的代码，FullyShardedDataParallel nn.Module 的 wrapper重写了nn.Module的forward()方法，安装了前向传播前和后的逻辑，而功能性的fully_shard通过注册nn.Module的钩子函数（如register_forward_pre_hook()和register_forward_hook()）来实现。从后向传播中捕获适当的信号更具挑战性，因为PyTorch会自动且透明地处理后向传播。幸运的是，autograd引擎提供了各种钩子函数，可以安装具有精确粒度的自定义逻辑。<br>
+
+- 通过在**Tensor上注册register_hook()函数**，可以在生成Tensor的梯度时运行自定义函数。这有助于将FSDP逻辑锚定(anchor)到后向传播中激活的梯度计算上。FSDP会将此类型的钩子函数注册到**每个FSDP单元的前向输出Tensor上**，在后向传播进入该FSDP单元之前插入通信操作。
+- 通过在**backward()上注册queue_callback()函数**，可以在结束当前autograd GraphTask之前(right before)运行，通常是整个后向传播的结束。FSDP依赖于此钩子函数来等待(pending)待处理的通信，以确保后续的优化器步骤不会过早地使用梯度。<br>
+- 通过在**AccumulateGrad反向传播函数上注册钩子函数**，在当前后向传播中参数的梯度累积完成时触发。FSDP将此类型的钩子函数附加到每个FlatParameter的AccumulateGrad函数上，以在梯度准备好时立即启动Reduce-Scatter操作。请注意，上述提到的Tensor钩子理论上可以实现相同的行为，但可能会引入不必要的延迟，因为它需要等待输入激活的梯度计算完成。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;上述方法综合地以非侵入性(non-intrusive)和高效(efficient)的方式将FSDP算法与PyTorch的nn.Module和autograd引擎集成在一起。<br>
+
+## 4.4 本地混合精度
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP提供了一个灵活的(versatile)本地混合精度机制。在参数管理方面，它遵循标准的混合精度技术，即同时维护参数(parameters)的低精度和全精度副本[18]。前向和后向计算使用低精度，而优化器步骤使用全精度。如果需要，FSDP允许用户为参数、梯度归约和不可训练缓冲区指定独立的精度。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于参数(parameter)元素数量为Ψ（torch.numel），每个低精度元素的字节数为 $K_{low}$ ，每个全精度元素的字节数为 $K_{full}$ ，这种混合精度的方法通常会将内存开销从 $K_{full}Ψ$ 增加到 $(K_{low} + K_{full})Ψ$ ，因为需要维护两个精度的副本。然而，由于FSDP的设计始终将每个本地分片的FlatParameter保留在GPU内存中，并且仅动态分配未分片的FlatParameter，因此FSDP可以回避这个问题。对于具有由 $𝜓_{1}，\dots，𝜓_{𝑁}$ 给出的numels的𝑁个FlatParameters，FSDP的参数峰值内存贡献实际上从 $\frac{K_{full}}{F} {\sum_{i=1}}^{N} \psi_{i} + K_{full} {\max_{i=1}}^{N} \psi_{i}$ 字节减少到 $\frac{K_{full}}{F} {\sum_{i=1}}^{N} \psi_{i}+K_{low} \max _{i=1}^{N} \psi_{i}$。换句话说，FSDP直接将第二个 $𝐾_{full} {\max^{𝑁}}_{𝑖=1}𝜓_{𝑖}$ 项减少为 $𝐾_{low} {max_{𝑁}}_{𝑖=1}𝜓_{𝑖}$ 。
