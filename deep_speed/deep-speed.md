@@ -119,6 +119,35 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;ZeRO-Offload很好地补充了ZeRO-2，在少量GPU上支持大型模型的高效训练。从1到16个GPU，ZeRO-Offload通过利用CPU内存将模型训练从不可行变为可行，减少了模型所需的GPU内存。**在32个GPU上，ZeRO-Offload略优于ZeRO-2**；这是因为ZeRO-Offload在GPU上节省了额外的内存，使得可以使用**更大的批次大小**进行训练，并**提高了GPU的计算效率**，尽管有CPU卸载的开销。随着GPU数量的增加（如64和128个），ZeRO-2优于ZeRO-Offload，因为两者现在可以运行相似的批次大小。一方面，ZeRO-2没有将数据移动到CPU的开销，另一方面，GPU上的优化器步骤计算比在CPU上快得多。总之，ZeRO-Offload很好地补充了ZeRO-2，并扩展了ZeRO优化系列，覆盖了从单个设备到数千个设备的大型模型训练的完整范围。<br>
 
 # 3. DeepSpeed稀疏注意力：以6倍更快的执行速度支持比原先长10倍的序列
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;基于注意力机制的深度学习模型，例如Transformer，在捕捉输入序列中的token之间的关系方面非常有效，即使跨越较长的距离。因此，它们被应用于文本、图像和基于声音的输入，其中序列长度可以达到数千个token。然而，尽管注意力模块在捕捉长期依赖关系方面非常有效，但在实践中，它们在处理长序列输入时受到计算和内存需求的限制，这些需求随着序列长度的增加呈**二次增长**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了解决这个限制，DeepSpeed提供了一套稀疏注意力内核(sparse attention kernels)，通过块稀疏(block-sparse)计算的方式，可以将注意力计算的计算和内存需求降低数个数量级。该套件不仅减轻了注意力计算的内存瓶颈，还能高效地执行稀疏计算。其API允许方便地与任何基于Transformer的模型集成。除了提供广泛的稀疏结构，它还具有处理任何用户定义的块稀疏结构的灵活性。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;具体来说，稀疏注意力（SA）可以设计为在附近的tokens之间计算局部注意力，或者通过使用局部注意力计算的摘要token进行全局注意力。此外，SA还可以允许随机注意力或局部、全局和随机注意力的任意组合，如图10中的蓝色、橙色和绿色块所示。因此，SA将内存占用减少到 $o(wn)$ ，其中 $1 < w < n$ 是一个参数，其值取决于注意力结构。<br>
+
+![figure10](images/deepspeed-figure10.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**在GPU上的高效实现**：尽管稀疏注意力的基本实现可能节省了内存，但在计算方面，它甚至可能比完全计算更差。这主要是由于稀疏数据在整体计算中引入了分歧(divergence)和非协调的内存访问。总的来说，在GPU上开发高效的稀疏内核是具有挑战性的。DeepSpeed提供了在[Triton](https://github.com/ptillet/triton)中开发的高效稀疏注意力内核。这些内核采用了块稀疏的模式，可以实现对齐的内存访问，减轻线程分歧，并平衡处理器上的工作负载。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**系统性能**：如图11所示，稀疏注意力（SA）在长序列上具有超过10倍的能力，并且计算速度最高可提高6.3倍。左图展示了在BERT-Base和BERT-Large模型中可运行的最长序列长度，分为三个设置：密集（dense）、带有激活检查点的密集（dense with activation checkpoint）和稀疏（SA）带有激活检查点。与密集相比，SA使BERT-Base和BERT-Large的序列长度分别增加了10倍和16倍。此外，与密集相比，SA减少了总计算量并提高了训练速度：随着序列长度的增加，提速效果更显著，对于BERT-Base可以提高高达6.3倍，对于BERT-Large可以提高5.3倍。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**系统性能**：如图11所示，稀疏注意力（SA）在超过10倍长度的序列上具有强大的能力，并且计算速度最高可提高6.3倍。左图显示了在BERT-Base和BERT-Large模型下三种设置下可运行的最长序列长度：密集（dense）、带有激活检查点的密集（dense with activation checkpoint）和稀疏（SA）带有激活检查点。与密集相比，SA分别使BERT-Base和BERT-Large的序列长度增加了10倍和16倍。此外，与密集相比，SA减少了总计算量并提高了训练速度：随着序列长度的增加，提速效果更为显著，对于BERT-Base可以提高高达6.3倍，对于BERT-Large可以提高5.3倍。<br>
+
+![figure11](images/deepspeed-figure11.jpg)
+
+## 3.1 稀疏注意力(SA) 是如何达到接近或超过 full-attention的精度的
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;相关的研究工作，如稀疏注意力([Sparse Transformer](https://arxiv.org/pdf/1904.10509.pdf))、[Longformer](https://arxiv.org/pdf/2004.05150.pdf)和[BigBird](https://arxiv.org/pdf/2007.14062.pdf)，在稀疏注意力方面已经展示出与完全注意力相媲美甚至更高的准确性(accuracy)。我们的经验也与这些研究相一致。除了更低的内存开销和更快的计算速度外，我们还观察到在实际生产模型中，稀疏注意力可以实现**更高的准确性和更快的收敛速度**。以下图表展示了基于BERT进行长文档理解（2,048个序列长度）的生产模型训练的准确性。实验在三种设置下进行：从头开始的密集训练、从头开始的稀疏训练以及从使用512个序列长度的密集模型检查点继续训练的稀疏训练。我们观察到，在从头开始的预训练中，稀疏训练相比密集训练更快地收敛，并且准确性更高。此外，从使用稀疏模型进行预训练的检查点继续训练的结果表现得更好，无论是在时间还是准确性方面。 <br>
+
+![figure12](images/deepspeed-figure12.jpg)
+
+## 3.2 稀疏注意力(SA) 与sota的 Longtransformer 比较
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们将SA与Longformer进行了比较，Longformer是一种最先进的稀疏结构和实现方法。在我们的实验中，SA使用了"[Fixed](https://arxiv.org/pdf/1904.10509.pdf)"稀疏性，并且这两种实现方法在准确性方面是可比较的。在系统性能方面，SA在预训练和推理中都优于Longformer：<br>
+- 在Wikitext103上进行MLM预训练的执行速度比Longformer快1.5倍。
+- 在BERT-Base上进行推理（批量大小为1，序列长度为2,048）的执行速度比Longformer快3倍。
+
+## 3.3 能够处理任何块稀疏结构的灵活性
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;DeepSpeed稀疏注意力套件并不针对任何特定的稀疏结构，而是为模型科学家提供了有效的系统支持，使其能够探索任何块稀疏结构。目前，我们已经添加了一些流行的稀疏结构，例如[Fixed](https://arxiv.org/pdf/1904.10509.pdf)（来自OpenAI Sparse Transformer）、[BigBird](https://arxiv.org/pdf/2007.14062.pdf)（来自Google）和BSLongformer（AI2 [Longformer](https://arxiv.org/pdf/2004.05150.pdf)的块稀疏实现）。我们还定义了一个“可变”结构的模板，如图10所示，可以用于简单地自定义任何块稀疏的随机、局部或全局注意力模式。<br>
+
+# 4. [1 bit Adam](https://www.microsoft.com/en-us/research/publication/1-bit-adam-communication-efficient-large-scale-training-with-adams-convergence-speed/)：通信减少5倍，训练速度提高3.4倍
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;大规模模型（如BERT和GPT-3）的可扩展训练需要在模型设计、架构和系统能力方面进行精心优化。从系统角度来看，**通信已成为一个主要瓶颈**，特别是在具有标准TCP互连的普通系统上，这些系统的网络带宽有限。<br>
+
 
 
 
