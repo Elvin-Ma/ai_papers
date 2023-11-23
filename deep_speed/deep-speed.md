@@ -157,6 +157,7 @@ $$x\rightarrow \frac{|x|}{|Sign(x)|} Sign(x)$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;误差补偿的思想可以总结为：1）进行压缩，2）记录压缩误差，然后3）在下一次迭代中将压缩误差添加回去。对于随机梯度下降（SGD），进行误差压缩的结果是:<br>
 $$x_{t}=x_{t-1}-\gamma C(g_{t}+e_{t-1}), \quad e_{t}=g_{t}+e_{t-1}-C(g_{t}+e_{t-1})$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;其中，C(.)表示1bit压缩操作符。通过进行误差补偿，好处在于历史的压缩误差 $e_{t}$ 和 $e_{t} - 1$ 最终会相互抵消，这可以通过以下方式看出：<br>
+$$x_{t}=x_{t-1}-\gamma(g_{t}+e_{t-1}-e_{t})$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种策略已经被证明适用于所有线性依赖于梯度的优化算法，例如随机梯度下降（SGD）和动量SGD。<br>
 
 
