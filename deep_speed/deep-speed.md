@@ -156,9 +156,66 @@ $$x\rightarrow \frac{|x|}{|Sign(x)|} Sign(x)$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通过这种压缩方法，我们可以通过使用1位来表示每个数字，从而实现32倍的内存大小减小。然而，使用这种简单的方法会显著降低收敛速度，导致该方法不适用。为了解决这个问题，最近的研究表明，通过使用误差补偿压缩，我们可以期望在通信压缩的基础上几乎获得相同的收敛速度。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;误差补偿的思想可以总结为：1）进行压缩，2）记录压缩误差，然后3）在下一次迭代中将压缩误差添加回去。对于随机梯度下降（SGD），进行误差压缩的结果是:<br>
 $$x_{t}=x_{t-1}-\gamma C(g_{t}+e_{t-1}), \quad e_{t}=g_{t}+e_{t-1}-C(g_{t}+e_{t-1})$$
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;其中，C(.)表示1bit压缩操作符。通过进行误差补偿，好处在于历史的压缩误差 $e_{t}$ 和 $e_{t} - 1$ 最终会相互抵消，这可以通过以下方式看出：<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;其中，C(.)表示1bit压缩操作符。通过进行误差补偿，好处在于历史的压缩误差 $e_{t}$ 和 $e_{t-1}$ 最终会相互抵消，这可以通过以下方式看出：<br>
 $$x_{t}=x_{t-1}-\gamma(g_{t}+e_{t-1}-e_{t})$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种策略已经被证明适用于所有线性依赖于梯度的优化算法，例如随机梯度下降（SGD）和动量SGD。<br>
+
+## 4.2 Adam 优化器误差补偿的挑战
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们在下面提供Adam算法的概述。更新规则如下：<br>
+$$m_{t+1}=\beta_{1} m_{t}+(1-\beta_{1}) g_{t} \dots (momentum term)$$ 
+$$v_{t+1}=\beta_{2} v_{t}+(1-\beta_{2})(g_{t})^{2} \dots (variance term)$$
+$$x_{t+1}=x_{t}-\gamma \frac{m_{t+1}}{\sqrt{v_{t+1}}+\eta}$$
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如上述公式所示，方差项 $v_{t}$ 与梯度 $g_{t}$ 非线性相关。如果我们将基本的误差补偿压缩应用于Adam算法，我们观察到Adam将无法收敛，如图13所示。<br>
+
+![figure13](images/deepspeed-figure13.jpg)
+
+## 4.3 使用1 bit Adam进行通信压缩
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了在使用Adam优化器时进行通信压缩，我们开发了1 Bit Adam，通过预处理来解决梯度中的非线性问题。我们观察到，在经过几个训练轮次后，非线性项方差 ${v_{t})$ 的变化幅度显著减小，并且在之后将其保持不变不会改变收敛速度。所提出的1bit Adam优化器如图14所示，由两个部分组成：热身阶段（warmup stage）和压缩阶段（compression stage）。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;热身阶段本质上是原始的Adam算法，而压缩阶段则保持**方差项不变**，并将**剩余的线性项**（即动量）压缩为1位表示。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;算法的压缩阶段受到阈值参数的控制（如图14所示）。当我们检测到“方差”**变化低于一定阈值时**，我们切换到压缩阶段。我们的研究表明，整个训练过程中只需要进行15-20%的热身阶段即可。<br>
+
+![figure14](images/deepspeed-figure14.jpg)
+
+### 4.3.1 Adam 压缩的深入分析
+对于1 bit Adam中的权重更新规则由以下公式控制。对于第 $i_{th}$ 个工作节点，在压缩阶段中：<br>
+
+![formula1](images/deepspeed-formula1.jpg)
+
+
+## 4.4 解决1 Bit Adam在系统中的挑战
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;除了算法上的挑战之外，在训练系统中应用1位Adam还存在两个系统挑战。首先，我们需要高效的内核将**动量转换为1位表示**。其次，我们需要高效的通信方案在不同的GPU之间交换这个压缩的动量。压缩的目标是减少整体的训练时间，以便可以使用带宽受限的互连系统来训练大型模型。我们在DeepSpeed中解决了这些挑战，并引入了一个针对受通信限制的系统进行训练的完全优化的1 Bit Adam实现。<br>
+
+## 4.5 1Bit Adam在受通信限制的系统上的优势
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;1 Bit Adam提供与Adam相同的收敛性，并且通信开销最多**减少5倍**，可以实现BERT-Large预训练的吞吐量提高最多**3.5倍**，以及SQuAD微调的吞吐量提高最多2.7倍。这种端到端的吞吐量改善是通过在压缩阶段观察到的6.6倍（图15左）和6.2倍（图15右）的加速实现的。值得一提的是，我们的1 bit Adam优化器在40 Gigabit以太网系统上的扩展性非常好，其性能与在40 Gigabit InfiniBand QDR系统上的Adam相当。我们注意到，基于iPerf基准测试，40 Gigabit以太网的有效带宽为4.1 Gbps，而基于InfiniBand perftest微基准测试，InfiniBand提供接近峰值带宽32 Gbps的性能。<br>
+
+![figure15](images/deepspeed-figure15.jpg)
+
+## 4.6 1 Bit Adam 性能案例研究
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;与Adam相同的收敛性：使用1Bit Adam的一个主要问题是收敛速度，我们发现1bit Adam可以在相同数量的训练样本下达到与Adam相同的收敛速度和可比较的测试性能，如图16所示。
+
+![figure16](images/deepspeed-figure16.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;BERT-Base和BERT-Large的详细结果如表1所示。我们可以看到，在未压缩和压缩的情况下，得分与原始模型相当或更好。<br>
+
+![table1](images/deepspeed-table1.jpg)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;最多减少5倍的通信量：1位Adam提供与Adam相同的收敛性，并且在16位（FP16）训练的压缩阶段将通信量减少了16倍。对于BERT预训练，这导致整体通信量减少了5倍，因为我们观察到热身阶段只占总体训练时间的15%。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;计算原始Adam与1位Adam之间通信量比例的公式如下：<br>
+
+$$ 1 / (warmup + (1 - warmup)/16)$$
+
+*(warmup 指的时warmp 的 adam 所占的比例)*
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;1Bit Adam在BERT-Large训练中速度提升3.5倍：我们在两种带宽受限的互连系统上展示了在训练BERT-Large时的两个主要结果：1) 40 Gbps以太网（图17左）和2) 40 Gbps InfiniBand QDR（图17右）。在压缩阶段，我们观察到以太网系统的吞吐量最多提高了6.6倍，而InfiniBand系统的吞吐量最多提高了2倍，从而分别实现了3.5倍和2.7倍的端到端加速（包括热身阶段和压缩阶段）。1 Bit Adam的主要优点来自通信量的减少，这得益于我们的压缩动量交换以及我们自定义的allreduce操作，它使用非阻塞gather操作后跟allgather操作来实现高效的1 bit通信。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;需要注意的是，通过使用像LAMB这样的优化器并增加总批量大小，可以减少通信。然而，根据我们的经验，对于大批量的情况，严格的超参数调整往往更加困难。此外，1 bit Adam对于具有小关键批量大小（无法使用大批量获得良好收敛性）的工作负载也非常有效，例如许多微调任务。<br>
+
+![figure17](images/deepspeed-figure17.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;1位Adam在SQuAD微调中速度提升2.7倍：1位Adam不仅在大规模训练任务上具有可扩展性，而且在像SQuAD微调这样的任务上也表现出色。如图18所示，1bit Adam在基于以太网和InfiniBand的系统上都具有良好的扩展性，并在基于以太网的系统上达到最高6.2倍的吞吐量（在压缩阶段），从而实现了2.7倍的端到端加速（25%热身阶段加上75%压缩阶段）。对于SQuAD微调，我们观察到总批量大小为96时具有最佳的F1分数。大于此值的批量大小会降低收敛速度，并需要额外的超参数调整。因此，为了扩展到32个GPU，我们每个GPU只能使用3-4个较小的批量大小。这使得微调任务具有较高的通信需求，并且难以扩展。1bit Adam很好地解决了扩展挑战，实现了3.4倍的通信量减少而无需增大批量大小，并实现了2.7倍的端到端加速。<br>
+
+![figure18](images/deepspeed-figure18.jpg)
+
+请访问[DeepSpeed网站](https://www.microsoft.com/en-us/research/project/deepspeed/)和[Github 仓库](https://github.com/microsoft/DeepSpeed)以获取有关这些新技术的代码、教程和文档！我们还将其中一些技术集成到ONNX Runtime中（在新标签页中打开）。<br>
 
 
 
