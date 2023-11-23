@@ -151,9 +151,13 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于像Adam这样强大的优化器来说，梯度的非线性依赖性（在方差项中）使得开发基于误差补偿的压缩技术变得具有挑战性，从而限制了最先进的通信压缩技术的实际价值。<br>
 
 ## 4.1 经典压缩技术背景介绍
-通信压缩的一种方式是1位压缩，可以表示为：<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通信压缩的一种方式是1 bit 压缩，可以表示为：<br>
 $$x\rightarrow \frac{|x|}{|Sign(x)|} Sign(x)$$
-
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通过这种压缩方法，我们可以通过使用1位来表示每个数字，从而实现32倍的内存大小减小。然而，使用这种简单的方法会显著降低收敛速度，导致该方法不适用。为了解决这个问题，最近的研究表明，通过使用误差补偿压缩，我们可以期望在通信压缩的基础上几乎获得相同的收敛速度。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;误差补偿的思想可以总结为：1）进行压缩，2）记录压缩误差，然后3）在下一次迭代中将压缩误差添加回去。对于随机梯度下降（SGD），进行误差压缩的结果是:<br>
+$$x_{t}=x_{t-1}-\gamma C(g_{t}+e_{t-1}), \quad e_{t}=g_{t}+e_{t-1}-C(g_{t}+e_{t-1})$$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;其中，C(.)表示1bit压缩操作符。通过进行误差补偿，好处在于历史的压缩误差 $e_{t}$ 和 $e_{t} - 1$ 最终会相互抵消，这可以通过以下方式看出：<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种策略已经被证明适用于所有线性依赖于梯度的优化算法，例如随机梯度下降（SGD）和动量SGD。<br>
 
 
 
