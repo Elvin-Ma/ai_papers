@@ -147,6 +147,12 @@
 
 # 4. [1 bit Adam](https://www.microsoft.com/en-us/research/publication/1-bit-adam-communication-efficient-large-scale-training-with-adams-convergence-speed/)：通信减少5倍，训练速度提高3.4倍
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;大规模模型（如BERT和GPT-3）的可扩展训练需要在模型设计、架构和系统能力方面进行精心优化。从系统角度来看，**通信已成为一个主要瓶颈**，特别是在具有标准TCP互连的普通系统上，这些系统的网络带宽有限。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**通信压缩**是减少这类系统上训练时间的重要技术。其中一种最有效的压缩通信方式是通过**误差补偿压缩**，它提供了鲁棒的收敛速度，即使在进行1位压缩时也能保持良好的效果。然而，最先进的误差补偿技术只适用于基本优化器，如随机梯度下降（SGD）和带动量的SGD，这些优化器在梯度上是线性相关的。它们无法与像Adam这样的非线性梯度优化器一起使用，而Adam在许多任务中，包括BERT类模型的训练中，提供了最先进的收敛效率和准确性。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于像Adam这样强大的优化器来说，梯度的非线性依赖性（在方差项中）使得开发基于误差补偿的压缩技术变得具有挑战性，从而限制了最先进的通信压缩技术的实际价值。<br>
+
+## 4.1 经典压缩技术背景介绍
+通信压缩的一种方式是1位压缩，可以表示为：<br>
+$$x\rightarrow \frac{|x|}{|Sign(x)|} Sign(x)$$
 
 
 
