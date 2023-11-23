@@ -171,7 +171,7 @@ $$x_{t+1}=x_{t}-\gamma \frac{m_{t+1}}{\sqrt{v_{t+1}}+\eta}$$
 ![figure13](images/deepspeed-figure13.jpg)
 
 ## 4.3 使用1 bit Adam进行通信压缩
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了在使用Adam优化器时进行通信压缩，我们开发了1 Bit Adam，通过预处理来解决梯度中的非线性问题。我们观察到，在经过几个训练轮次后，非线性项方差 ${v_{t})$ 的变化幅度显著减小，并且在之后将其保持不变不会改变收敛速度。所提出的1bit Adam优化器如图14所示，由两个部分组成：热身阶段（warmup stage）和压缩阶段（compression stage）。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了在使用Adam优化器时进行通信压缩，我们开发了1 Bit Adam，通过预处理来解决梯度中的非线性问题。我们观察到，在经过几个训练轮次后，非线性项方差 ${(v_{t})$ 的变化幅度显著减小，并且在之后将其保持不变不会改变收敛速度。所提出的1bit Adam优化器如图14所示，由两个部分组成：热身阶段（warmup stage）和压缩阶段（compression stage）。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;热身阶段本质上是原始的Adam算法，而压缩阶段则保持**方差项不变**，并将**剩余的线性项**（即动量）压缩为1位表示。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;算法的压缩阶段受到阈值参数的控制（如图14所示）。当我们检测到“方差”**变化低于一定阈值时**，我们切换到压缩阶段。我们的研究表明，整个训练过程中只需要进行15-20%的热身阶段即可。<br>
 
