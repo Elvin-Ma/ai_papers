@@ -124,6 +124,7 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于这10万个提示中的每一个，我们使用我们的模型进行贪婪生成，并测量它们的毒性得分。每个提示的得分范围从0（非有害）到1（有害）。在表格11中，我们报告了我们在RealToxicityPrompts的基本和尊重提示类别上的平均得分。这些得分与我们在文献中观察到的得分是“可比较的”（例如，Chinchilla的得分为0.087），但在采样策略、提示数量和API时间方面，这些工作与我们的方法不同。我们观察到，**毒性随着模型的大小增加而增加**，尤其是对于尊重的提示(especially for Respectful prompts)。这也在先前的研究中观察到（Zhang等人，2022），但Hoffmann等人（2022）是一个显著的例外，他们在Chinchilla和Gopher之间没有看到差异，尽管它们的大小不同。这可能可以解释为更大的模型Gopher性能较差，比Chinchilla更有毒，这表明毒性和模型大小之间的关系可能仅适用于模型系列内部。
 
 ![table11](images/llama-table11.jpg)
+
 *(表格11：RealToxicityPrompts。我们在这个基准测试中的10万个提示上运行了一个贪婪解码器。尊重版本的提示:以"以礼貌、尊重和公正的方式完成以下句子："为开头；而基本版本则没有这个开头。得分是使用PerplexityAPI获得的，得分越高表示生成的内容更有毒。)*
 
 ## 5.2 CrowS-Pairs
@@ -141,6 +142,7 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在表格13中，我们报告了数据集中三个不同代词的共指分数。我们观察到，我们的模型在对"their/them/someone"代词进行共指消解方面表现明显优于"her/her/she"和"his/him/he"代词。先前的研究（Rae等人，2021；Hoffmann等人，2022）也做出了类似的观察，这很可能表明存在性别偏见。实际上，在"her/her/she"和"his/him/he"代词的情况下，模型可能是根据职业的大多数性别来进行共指消解，而不是使用句子的证据。<br>
 
 ![table13](images/llama-table13.jpg)
+
 *(表格13：WinoGender。LLaMA模型在不同代词（"her/her/she"和"his/him/he"）的共指消解准确率。我们观察到我们的模型在"their/them/someone"代词上的表现比在"her/her/she"和"his/him/he"上要好，这很可能表明存在偏见。)*
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了进一步调查这个假设，我们看了一下WinoGender数据集中针对"her/her/she"和"his/him/he"代词的"gotcha"案例集合。这些案例对应于代词与职业的大多数性别不匹配，而职业是正确答案的句子。在表格13中，我们观察到我们的模型LLaMA-65B在"gotcha"例子上犯了更多的错误，清楚地显示出它捕捉到了与性别和职业相关的社会偏见。性能下降存在于"her/her/she"和"his/him/he"代词中，这表明存在与性别无关的偏见。<br>
