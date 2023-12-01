@@ -44,10 +44,71 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们使用AdamW优化器（Loshchilov和Hutter，2017）对模型进行训练，具体的超参数如下：β1 = 0.9，β2 = 0.95。我们采用余弦学习率调度，使得最终学习率等于最大学习率的10%。我们使用0.1的权重衰减和1.0的梯度裁剪。我们使用2,000个预热步骤，并根据模型的大小调整学习率和批量大小（详见表2）。<br>
 
 ## 2.4 高效实现
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了提高模型的训练速度，我们进行了几项优化。首先，我们使用了有效的**因果多头注意力的实现**，以减少内存使用和运行时间。这个实现在xformers库中可用，受到了[Rabe和Staats(2021)](https://arxiv.org/pdf/2112.05682.pdf)的启发，并使用了Dao等人（2022）的反向传播方法。这是通过不存储注意力权重和不计算由于语言建模任务的因果性质而被屏蔽的键/查询分数来实现的。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了提高模型的训练速度，我们进行了几项优化。首先，我们使用了有效的**因果多头注意力的实现**，以减少内存使用和运行时间。这个实现在xformers库中可用，受到了[Rabe和Staats(2021)](https://arxiv.org/pdf/2112.05682.pdf)的启发，并使用了Dao等人（2022）的反向传播方法。这是通过不存储注意力权重和不计算由于语言建模任务的因果性质而被屏蔽的 key/query 分数来实现的。<br> 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了进一步提高训练效率，我们通过检查点技术减少了在反向传播过程中需要重新计算的激活值数量。具体来说，我们保存了计算成本较高的激活值，例如线性层的输出。这是通过手动实现Transformer层的反向函数来实现的，而不是依赖于PyTorch的自动求导。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了充分受益于这个优化，我们需要通过使用模型和序列并行化来减少模型的内存使用，如[Korthikanti等人（2022)](https://arxiv.org/abs/2205.05198)所描述的。此外，我们还尽可能地重叠激活值的计算和GPU之间的网络通信（由于all_reduce操作）。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当训练一个拥有650亿参数的模型时，我们的代码在拥有80GB RAM的2048个A100 GPU上每秒处理大约380个tokens。这意味着在包含1.4T个标记的数据集上训练大约需要21天的时间。<br>
+
+# 3 主要结果
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在前期的研究([language models are few-shot leaners](https://arxiv.org/abs/2005.14165))的基础上，我们考虑了零样本学习和小样本学习任务，并在总共20个基准测试中报告了结果：<br>
+- **zero shot**. 我们提供了任务的文本描述和一个测试示例。模型可以通过开放式生成方式给出答案，或对提出的答案进行排序。
+- **few shot**. 我们提供了一些任务示例（1至64个示例）和一个测试示例。模型将这些文本作为输入，并生成答案或对不同选项进行排序。
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们将LLaMA与其他基础模型进行比较，包括不公开可用的语言模型GPT-3（Brown等人，2020）、Gopher（Rae等人，2021）、Chinchilla（Hoffmann等人，2022）和PaLM（Chowdhery等人，2022），以及开源的OPT模型（Zhang等人，2022）、GPT-J（Wang和Komatsuzaki，2021）和GPTNeo（Black等人，2022）。在第4节中，我们还简要比较了LLaMA与针对指令进行调优的模型，例如OPT-IML（Iyer等人，2022）和Flan-PaLM（Chung等人，2022）。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们对LLaMA进行了自由生成任务和多项选择任务的评估。在多项选择任务中，目标是在给定的上下文中，从一组给定选项中选择最合适的完成方式。我们选择在给定上下文下具有最高似然性的完成方式。我们遵循Gao等人（2021）的方法，使用完成方式中的字符数进行归一化的似然性，除了某些数据集（OpenBookQA、BoolQ），对于这些数据集，我们遵循Brown等人（2020）的方法，根据完成方式在“Answer:”作为上下文下的似然性进行归一化： $\frac{P(completion|context)}{P(completion|“Answer:”)}$ 。<br>
+
+## 3.1 常识推理(Common Sense Reasoning)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们考虑了八个常见的常识推理基准测试：BoolQ（Clark等人，2019）、PIQA（Bisk等人，2020）、SIQA（Sap等人，2019）、HellaSwag（Zellers等人，2019）、WinoGrande（Sakaguchi等人，2021）、ARC easy和challenge（Clark等人，2018）以及OpenBookQA（Mihaylov等人，2018）。这些数据集包括Cloze和Winograd风格的任务，以及多项选择题目回答。我们按照语言建模社区的做法在zero-shot设置下进行评估。<br>
+
+![table3](images/llama-table3.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在表3中，我们与各种规模的现有模型进行了比较，并报告了对应论文中的数据。首先，LLaMA-65B在除了BoolQ 的所有报告的基准测试中都优于Chinchilla-70B。同样地，除了BoolQ和WinoGrande，该模型也在其他所有地方超过了PaLM-540B。LLaMA-13B模型尽管体积只有GPT-3的十分之一，在大多数基准测试中也表现优于GPT-3。<br>
+
+## 3.2 闭书问答(Closed-book Question Answering)
+
+![table4](images/llama-table4.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们将LLaMA与现有的大型语言模型在两个闭书问答基准测试上进行了比较：自然问题（Natural Questions）（Kwiatkowski等人，2019）和TriviaQA（Joshi等人，2017）。对于这两个基准测试，我们在闭书设置下报告了完全匹配的性能，即模型无法访问包含回答问题的证据的文档。在表4中，我们报告了自然问题的性能，而在表5中，我们报告了TriviaQA的性能。在这两个基准测试中，LLaMA-65B在零样本学习和少样本学习的设置下取得了最先进的性能。更重要的是，尽管体积只有GPT-3和Chinchilla的5-10倍小，LLaMA-13B在这些基准测试上也具有竞争力。该模型在推理过程中使用单个V100 GPU。<br>
+*(注释：闭书问答（Closed-book Question Answering）是指在没有外部资源或参考文献的情况下回答问题。在闭书问答中，模型需要仅仅依靠其内部的知识和训练来理解问题并给出答案，而无法查阅外部信息来获取答案的支持。）* <br>
+
+![table5](images/llama-table5.jpg)
+
+*("one-shot" 并不一定意味着只进行一次训练，它通常指的是在模型只有一个示例或样本的情况下进行任务的推理或执行。)*
+
+## 3.3 阅读理解(Reading Comprehension)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们在 RACE 阅读理解基准测试（Lai等人，2017）上评估了我们的模型。该数据集是从为中国中学和高中学生设计的英语阅读理解考试中收集而来的。我们采用了 Brown等人（2020）的评估设置，并在表6中报告了结果。在这些基准测试中，LLaMA-65B 与 PaLM-540B 相媲美，LLaMA-13B 的表现比 GPT-3 高出几个百分点。<br>
+
+![table6](images/llama-table6.jpg)
+
+## 3.4 数学推理(Mathematical reasoning)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们在两个数学推理基准测试上评估了我们的模型：MATH（Hendrycks等人，2021）和GSM8k（Cobbe等人，2021）。MATH是一个包含12,000个中学和高中数学问题的数据集，问题以LaTeX格式编写。GSM8k是一组中学数学问题。在第7表中，我们与PaLM和Minerva（Lewkowycz等人，2022）进行了比较。Minerva是一系列在ArXiv和数学网页中提取的3850亿个标记上微调的PaLM模型，而PaLM和LLaMA都没有在数学数据上进行微调。PaLM和Minerva的数据取自Lewkowycz等人（2022），我们进行了有和无maj1@k的比较。maj1@k表示我们为每个问题生成k个样本，并进行多数投票评估（Wang等人，2022）。在GSM8k上，我们观察到LLaMA-65B的性能优于Minerva-62B，尽管LLaMA-65B没有在数学数据上进行过微调。<br>
+
+![table7](images/llama-table7.jpg)
+
+表格7：定量推理数据集上的模型性能。对于多数投票，我们使用与Minerva相同的设置，对于MATH数据集，k = 256个样本，对于GSM8k数据集，k = 100个样本（Minerva 540B在MATH数据集上使用k = 64个样本，在GSM8k数据集上使用k = 40个样本）。尽管LLaMA-65B没有在数学数据上进行微调，但在GSM8k数据集上表现优于Minerva-62B。<br>
+
+## 3.5 代码生成
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们在两个代码生成基准测试上评估了我们模型从自然语言描述中编写代码的能力：HumanEval（Chen等人，2021）和MBPP（Austin等人，2021）。对于这两个任务，模型接收到一个几句话的程序描述，以及一些输入输出示例。在HumanEval中，模型还接收到一个函数签名，并且提示信息以自然代码的格式呈现，其中包含文本描述和用于测试的文档字符串。模型需要生成一个符合描述并满足测试用例的Python程序。在表8中，我们将我们的模型的pass@1分数与没有在代码上进行微调的现有语言模型进行了比较，即PaLM和LaMDA（Thoppilan等人，2022）。PaLM和LLaMA是在包含类似数量的代码标记的数据集上进行训练的。<br>
+
+![table8](images/llama-table8.jpg)
+*(表格8：代码生成的模型性能。我们报告了在HumanEval和MBPP上的pass@分数。HumanEval的生成是在零-shot的情况下进行的，MBPP使用了类似于Austin等人（2021）的3-shot提示。标有∗的数值是从Chowdhery等人（2022）的图表中读取的。)* <br>
+
+如表8所示，**对于类似数量的参数，LLaMA优于其他通用模型**，如LaMDA和PaLM，这些模型并没有专门针对代码进行训练或微调。在HumanEval和MBPP上，参数为13B及以上的LLaMA的性能超过了参数为137B的LaMDA。即使训练时间更长，LLaMA 65B的性能也超过了PaLM 62B。在此表中报告的pass@1结果是在温度为0.1的采样下获得的。pass@100和pass@80指标是以温度0.8获得的。我们使用与Chen等人（2021）相同的方法来获取pass@k的无偏估计。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通过对代码特定tokens进行微调，可以提高代码的性能。例如，PaLM-Coder（Chowdhery等人，2022）将PaLM在HumanEval上的pass@1分数从26.2%提高到36%。其他专门针对代码进行训练的模型在这些任务上的表现也优于通用模型（Chen等人，2021；Nijkamp等人，2022；Fried等人，2022）。在代码标记上进行微调超出了本文的范围。<br>
+
+## 3.6 海量任务语言理解
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;海量任务语言理解（Massive Multitask Language Understanding，MMLU）基准测试是由Hendrycks等人（2020）引入的，包含了涵盖人文、STEM和社会科学等多个领域知识的多项选择题。我们在5-shot的设置下使用该基准测试提供的示例来评估我们的模型，并在表格9中报告结果。在这个基准测试中，我们观察到LLaMA-65B在平均值上落后于Chinchilla70B和PaLM-540B几个百分点，并且在大多数领域都如此。一个可能的解释是我们在预训练数据中只使用了有限数量的书籍和学术论文，例如ArXiv、Gutenberg和Books3，总计只有177GB，而这些模型是在高达2TB的书籍上进行训练的。Gopher、Chinchilla和PaLM使用的大量书籍可能也解释了为什么Gopher在这个基准测试中表现优于GPT-3，而在其他基准测试上则相当。<br>
+
+![table9](images/llama-table9.jpg)
+
+## 3.7 训练过程中表现的演变
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在训练过程中，我们跟踪了我们模型在一些问答和常识基准测试上的性能，并在图表2中进行了报告。在大多数基准测试中，性能稳步提升，并与模型的训练困惑度相关（参见图表1）。唯一的例外是SIQA和WinoGrande。特别是在SIQA上，我们观察到性能存在很大的变异，这可能表明该基准测试不太可靠。在WinoGrande上，性能与训练困惑度的相关性不太明显：LLaMA-33B和LLaMA-65B在训练过程中的性能相似。
+
+![figure2](images/llama-figure2.jpg)
+
+
 
 
 
