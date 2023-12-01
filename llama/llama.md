@@ -108,17 +108,71 @@
 
 ![figure2](images/llama-figure2.jpg)
 
+# 4 指令微调
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们展示了对指令数据进行简要微调会迅速改善MMLU的性能。尽管LLaMA-65B的非微调版本已经能够遵循基本指令，但我们观察到微调非常少量的数据就能提高MMLU的性能，并进一步提高模型遵循指令的能力。由于这不是本文的重点，我们只进行了一项实验，遵循了Chung等人（2022）的相同协议来训练一个指令模型，即LLaMA-I。<br>
 
+![table10](images/llama-table10.jpg)
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在表格10中，我们报告了我们的指令模型LLaMA-I在MMLU上的结果，并与现有的中等规模指令微调模型进行了比较，包括OPT-IML（Iyer等人，2022）和Flan-PaLM系列（Chung等人，2022）。所有报告的数据均来自相应的论文。尽管这里使用的指令微调方法很简单，但我们在MMLU上达到了68.9%的性能。LLaMA-I（65B）在MMLU上的表现优于现有的中等规模指令微调模型，但距离最先进的水平还有很大差距，即GPT code-davinci-002在MMLU上的得分为77.4（数据来自Iyer等人（2022））。有关57个任务在MMLU上的性能详细信息，请参见附录中的表格16。<br>
 
+# 5 偏见、有害内容和错误信息(Bias, Toxicity and Misinformation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;已经证明大型语言模型会复制和**放大训练数据中存在的偏见**（Sheng等人，2019；Kurita等人，2019），并生成有毒或冒犯性内容（Gehman等人，2020）。由于我们的训练数据集包含大量来自网络的数据，我们认为确定我们的模型生成此类内容的潜力至关重要。为了了解LLaMA-65B的潜在危害，我们在不同的基准测试上进行了评估，这些测试用于测量有害内容生成和刻板印象检测。虽然我们选择了一些标准基准测试，这些测试被语言模型界用来指出这些模型存在的一些问题，但这些评估并不足以完全理解与这些模型相关的风险。<br>
 
+## 5.1 RealToxicityPrompts(真正的毒性提示)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;语言模型可以生成有害语言，例如侮辱、仇恨言论或威胁。模型可以生成非常广泛的有害内容，这使得进行全面评估具有挑战性。最近的几项研究（Zhang等人，2022；Hoffmann等人，2022）考虑了RealToxicityPrompts基准测试（Gehman等人，2020），作为评估模型毒性的指标。RealToxicityPrompts包含约10万个需要模型完成的提示，然后通过向[PerspectiveAPI](https://perspectiveapi.com/)发出请求来自动评估毒性得分。我们无法控制第三方PerspectiveAPI使用的流程，这使得与先前模型进行比较变得困难。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于这10万个提示中的每一个，我们使用我们的模型进行贪婪生成，并测量它们的毒性得分。每个提示的得分范围从0（非有害）到1（有害）。在表格11中，我们报告了我们在RealToxicityPrompts的基本和尊重提示类别上的平均得分。这些得分与我们在文献中观察到的得分是“可比较的”（例如，Chinchilla的得分为0.087），但在采样策略、提示数量和API时间方面，这些工作与我们的方法不同。我们观察到，**毒性随着模型的大小增加而增加**，尤其是对于尊重的提示(especially for Respectful prompts)。这也在先前的研究中观察到（Zhang等人，2022），但Hoffmann等人（2022）是一个显著的例外，他们在Chinchilla和Gopher之间没有看到差异，尽管它们的大小不同。这可能可以解释为更大的模型Gopher性能较差，比Chinchilla更有毒，这表明毒性和模型大小之间的关系可能仅适用于模型系列内部。
 
+![table11](images/llama-table11.jpg)
+*(表格11：RealToxicityPrompts。我们在这个基准测试中的10万个提示上运行了一个贪婪解码器。尊重版本的提示:以"以礼貌、尊重和公正的方式完成以下句子："为开头；而基本版本则没有这个开头。得分是使用PerplexityAPI获得的，得分越高表示生成的内容更有毒。)*
 
+## 5.2 CrowS-Pairs
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们在CrowS-Pairs（Nangia等人，2020）数据集上评估了我们模型的偏见。该数据集可以测量9个类别的偏见：性别、宗教、种族/肤色、性取向、年龄、国籍、残疾、外貌和社会经济地位。每个示例由一个刻板印象和一个反刻板印象组成，我们使用两个句子的困惑度在zero-shot设置下测量模型对刻板句子的偏好。因此，较高的得分表示较高的偏见。我们在表格12中与GPT-3和OPT-175B进行了比较。总体而言，LLaMA的表现略优于这两个模型。我们的模型在宗教类别中尤其有偏见（与OPT-175B相比增加了10%），其次是年龄和性别。尽管经过多次过滤步骤，我们预计这些偏见来自于CommonCrawl数据集。<br>
 
+![table12](images/llama-table12.jpg)
 
+## 5.3 WinoGender
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了进一步调查我们模型在性别类别上的偏见，我们看了一下WinoGender基准测试（Rudinger等人，2018），这是一个共指消解数据集。WinoGender由Winograd模式组成，通过确定模型的共指消解性能是否受代词的性别影响来评估偏见。<br>
 
+*(注释：共指消解是指在自然语言处理中解决代词与其所指的实体（名词短语）之间的关系的任务。当我们阅读或听到一个代词（如"他"、"她"、"它"）时，我们需要根据上下文来确定它所指的是哪个实体。共指消解旨在解决这种歧义性，帮助我们理解句子的含义。)*
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;更具体地说，每个句子有三个提及：一个"职业"、一个"参与者"和一个"代词"，其中代词与职业或参与者进行共指。我们提示模型确定共指关系，并根据句子的上下文来衡量模型是否正确完成了共指消解。目标是揭示模型是否捕捉到了与职业相关的社会偏见。例如，WinoGender数据集中的一个句子是"The nurse notified the patient that his shift would be ending in an hour."，接着是'His'所指的内容。然后，我们比较模型解决共指消解时护士和病人的延续部分的困惑度。我们在使用3个代词时评估性能："her/her/she"、"his/him/he"和"their/them/someone"（不同的选择对应于代词的语法功能）。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在表格13中，我们报告了数据集中三个不同代词的共指分数。我们观察到，我们的模型在对"their/them/someone"代词进行共指消解方面表现明显优于"her/her/she"和"his/him/he"代词。先前的研究（Rae等人，2021；Hoffmann等人，2022）也做出了类似的观察，这很可能表明存在性别偏见。实际上，在"her/her/she"和"his/him/he"代词的情况下，模型可能是根据职业的大多数性别来进行共指消解，而不是使用句子的证据。<br>
 
+![table13](images/llama-table13.jpg)
+*(表格13：WinoGender。LLaMA模型在不同代词（"her/her/she"和"his/him/he"）的共指消解准确率。我们观察到我们的模型在"their/them/someone"代词上的表现比在"her/her/she"和"his/him/he"上要好，这很可能表明存在偏见。)*
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了进一步调查这个假设，我们看了一下WinoGender数据集中针对"her/her/she"和"his/him/he"代词的"gotcha"案例集合。这些案例对应于代词与职业的大多数性别不匹配，而职业是正确答案的句子。在表格13中，我们观察到我们的模型LLaMA-65B在"gotcha"例子上犯了更多的错误，清楚地显示出它捕捉到了与性别和职业相关的社会偏见。性能下降存在于"her/her/she"和"his/him/he"代词中，这表明存在与性别无关的偏见。<br>
+
+## 5.4 TruthfulQA
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TruthfulQA（Lin等人，2021）旨在衡量模型的真实性，即其识别陈述是否真实的能力。Lin等人（2021）将“真实”定义为“关于现实世界的字面真相”，而不是只在信仰体系或传统的背景下才成立的陈述。这个基准测试可以评估模型生成错误信息或虚假陈述的风险。问题以多样的风格编写，涵盖38个类别，并且设计为对抗性的。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在表格14中，我们报告了我们模型在衡量真实模型和真实且信息丰富的问题上的表现。与GPT-3相比，我们的模型在这两个类别中得分更高，但正确答案的比例仍然较低，表明我们的模型很可能会产生错误答案。<br>
+![table14](images/llama-table14.jpg)
+
+# 6 碳足迹
+
+![table15](images/llama-table15.jpg)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们模型的训练消耗了大量能源，导致二氧化碳的排放。我们参考了最近的相关文献，并在表格15中分解了总能耗和产生的碳足迹。我们采用了Wu等人（2022）提出的公式来估计训练模型所需的瓦时（Wh）以及碳排放量（tCO2eq）。对于瓦时，我们使用以下公式：
+
+$$Wh = GPU-h×(GPU power consumption)×PUE$$
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;其中我们将功耗效率 (Power Usage Effectiveness, PUE=1.1) 设置为1.1。生成的碳排放量取决于用于训练网络的数据中心的位置。例如，BLOOM使用的电网每千瓦时排放0.057千克二氧化碳当量，导致27吨二氧化碳当量，而OPT使用的电网每千瓦时排放0.231千克二氧化碳当量，导致82吨二氧化碳当量。在本研究中，我们希望比较如果这些模型在同一个数据中心进行训练，其训练过程中的碳排放成本。因此，我们不考虑数据中心的位置，而是使用美国国家平均碳强度系数0.385千克二氧化碳当量/千瓦时。这导致以下计算碳排放量的公式：
+
+$$tCO_{2eq} = MWh × 0.385$$
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了公平比较，我们对OPT和BLOOM应用相同的公式。对于OPT，我们假设训练需要在992个A100-80B上进行34天（[参见其日志](https://github.com/facebookresearch/metaseq/tree/main/projects/OPT/chronicles)）。最后，我们估计我们使用了2048个A100-80GB约5个月的时间来开发我们的模型。根据我们的假设，开发这些模型的成本约为2,638兆瓦时，总排放量为1,015吨二氧化碳当量。我们希望发布这些模型能够帮助减少未来的碳排放，因为训练已经完成，而且其中一些模型相对较小，可以在单个GPU上运行。<br>
+
+# 7 相关工作
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;语言模型是对单词、标记或字符序列的概率分布（Shannon，1948，1951）。这个任务通常被定义为下一个标记的预测，长期以来一直被视为自然语言处理中的核心问题（Bahl等，1983；Brown等，1990）。由于图灵（1950）提出使用语言通过“模仿游戏”来衡量机器智能，语言建模已被提出作为衡量人工智能进展的基准（Mahoney，1999）。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**架构(Architecture)**。传统上，语言模型基于n-gram计数统计（Bahl等，1983），并提出了各种平滑技术来改进对罕见事件的估计（Katz，1987；Kneser和Ney，1995）。在过去的二十年中，神经网络已成功应用于语言建模任务，从前馈模型（Bengio等，2000），循环神经网络（Elman，1990；Mikolov等，2010）和LSTM（Hochreiter和Schmidhuber，1997；Graves，2013）开始。最近，基于自注意力的Transformer网络在捕捉长距离依赖方面取得了重要的改进（Vaswani等，2017；Radford等，2018；Dai等，2019）。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**扩展性**。语言模型的扩展性，无论是模型大小还是数据集大小，都有着悠久的历史。Brants等人（2007）展示了在2万亿标记上训练的语言模型的好处，产生了3000亿个n-gram，对机器翻译的质量有所提升。虽然这项工作依赖于一种简单的平滑技术，称为"Stupid Backoff"，但Heafield等人（2013）随后展示了如何将Kneser-Ney平滑推广到Web规模的数据。这使得他们能够在CommonCrawl的9750亿标记上训练一个5-gram模型，生成了5000亿个n-gram（Buck等，2014）。Chelba等人（2013）引入了一亿字的基准测试数据集，用于衡量语言模型的进展。
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在神经语言模型的背景下，Jozefowicz等人（2016）通过将LSTM扩展到10亿个参数，在One Billion Word基准测试上取得了最先进的结果。后来，对Transformer模型的扩展在许多自然语言处理任务上取得了改进。值得注意的模型包括BERT（Devlin等，2018）、GPT-2（Radford等，2019）、MegatronLM（Shoeybi等，2019）和T5（Raffel等，2020）。一个重大突破是通过GPT-3（Brown等，2020）获得的，该模型具有1750亿个参数。这导致了一系列大型语言模型的出现，例如Jurassic-1（Lieber等，2021）、Megatron-Turing NLG（Smith等，2022）、Gopher（Rae等，2021）、Chinchilla（Hoffmann等，2022）、PaLM（Chowdhery等，2022）、OPT（Zhang等，2022）和GLM（Zeng等，2022）。Hestness等人（2017）和Rosenfeld等人（2019）研究了扩展对深度学习模型性能的影响，展示了模型和数据集大小与系统性能之间存在的幂律关系。Kaplan等人（2020）针对基于Transformer的语言模型推导了幂律定律，后来由Hoffmann等人（2022）通过在扩展数据集时调整学习率计划进行了改进。最后，Wei等人（2022）研究了扩展对大型语言模型的能力的影响。<br>
+
+# 8 结论
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本文中，我们提出了一系列与最先进的基础模型竞争的开放语言模型。最值得注意的是，LLaMA-13B在比GPT-3小10倍以上的情况下表现更好，而LLaMA-65B与Chinchilla-70B和PaLM-540B具有竞争力。与以前的研究不同的是，我们表明通过仅使用公开可用的数据进行训练，而不借助专有数据集，可以实现最先进的性能。我们希望将这些模型发布给研究社区，以加快大型语言模型的发展，并帮助改善它们的稳健性并缓解已知问题，如毒性和偏见。此外，我们观察到与Chung等人（2022）类似，对这些模型进行指导性微调可以取得有希望的结果，并计划在未来的工作中进一步研究这一问题。最后，我们计划在未来发布在更大的预训练语料库上训练的更大模型，因为我们在扩展过程中不断提升了性能。<br>
