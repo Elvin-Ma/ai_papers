@@ -22,10 +22,11 @@
 
 # 2 KV Cache
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这就是KV缓存发挥作用的地方。通过缓存先前的键(Key)和值(Value)，我们可以只专注于计算新token的注意力。<br>
-
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这就是KV缓存发挥作用的地方。通过缓存先前的键(Key)和值(Value)，我们可以专注于仅计算新token的注意力。<br>
 ![figure2](images/kv-cache-gif2.gif)
 
+*(缩放点积注意力的比较，带有和不带有KV缓存。emb_size表示嵌入大小。图片由作者创建。)*
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种优化为什么重要呢？如上图所示，使用KV缓存得到的矩阵要小得多，这导致矩阵乘法更快。唯一的缺点是它需要更多的GPU VRAM（或者如果没有使用GPU，则需要更多的CPU RAM）来缓存键(Key)和值(Value)的状态。
 # 5 参考链接
 [参考链接1](https://jalammar.github.io/illustrated-gpt2/)
 
