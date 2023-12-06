@@ -30,21 +30,21 @@
 
 # 3 KV Cache 静态展示
 ## 3.1 没有KV Cache 的情况
-- 之前tokens
+- 之前tokens <br>
 ![figure3](images/kv-cache-figure2.jpg)
 
-- 新增token
+- 新增token <br>
 ![figure3](images/kv-cache-figure3.jpg)
 
 ## 3.2 有KV Cache 的情况
-- 之前tokens
+- 之前tokens <br>
 ![figure4](images/kv-cache-figure4.jpg)
 
-- 新增token
+- 新增token <br>
 ![figure5](images/kv-cache-figure5.jpg)
 
 # 4 加速效果展示
-让我们使用[transformers库🤗](https://github.com/huggingface/transformers)来比较使用和不使用KV缓存时GPT-2的生成速度.<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;让我们使用[transformers库🤗](https://github.com/huggingface/transformers)来比较使用和不使用KV缓存时GPT-2的生成速度.<br>
 
 - 代码如下：
 ```
@@ -73,10 +73,10 @@ with KV caching: 11.885 +- 0.272 seconds
 without KV caching: 56.197 +- 1.855 seconds
 ```
 
-结果显示，推理速度的差异巨大，而GPU VRAM的使用量可以忽略不计。因此，请确保在您的Transformer模型中使用KV缓存！<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;结果显示，推理速度的差异巨大，而GPU VRAM的使用量可以忽略不计。因此，请确保在您的Transformer模型中使用KV缓存！<br>
 
 # 5 参考链接
-[参考链接1](https://jalammar.github.io/illustrated-gpt2/)
-[参考链接2](https://kipp.ly/transformer-inference-arithmetic/#kv-cache)
-[参考链接3](https://juejin.cn/post/7294638699418042378?from=search-suggest)
+- [参考链接1](https://jalammar.github.io/illustrated-gpt2/)
+- [参考链接2](https://kipp.ly/transformer-inference-arithmetic/#kv-cache)
+- [参考链接3](https://juejin.cn/post/7294638699418042378?from=search-suggest)
 
