@@ -24,9 +24,59 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这就是KV缓存发挥作用的地方。通过缓存先前的键(Key)和值(Value)，我们可以只专注于计算新token的注意力。<br>
 ![figure2](images/kv-cache-gif2.gif)
 
-*(缩放点积注意力的比较，带有和不带有KV缓存。emb_size表示嵌入大小。图片由作者创建。)*
+*(缩放点积注意力的比较，带有和不带有KV缓存。emb_size表示嵌入大小。)* <br>
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种优化为什么重要呢？如上图所示，使用KV缓存得到的矩阵要小得多，这导致矩阵乘法更快。唯一的缺点是它需要更多的GPU VRAM（或者如果没有使用GPU，则需要更多的CPU RAM）来缓存键(Key)和值(Value)的状态。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种优化为什么重要呢？如上图所示，使用KV缓存得到的矩阵要小得多，这导致矩阵乘法更快。唯一的缺点是它需要更多的GPU VRAM（或者如果没有使用GPU，则需要更多的CPU RAM）来缓存键(Key)和值(Value)的状态。<br>
+
+# 3 KV Cache 静态展示
+## 3.1 没有KV Cache 的情况
+- 之前tokens
+![figure3](images/kv-cache-figure2.jpg)
+
+- 新增token
+![figure3](images/kv-cache-figure3.jpg)
+
+## 3.2 有KV Cache 的情况
+- 之前tokens
+![figure4](images/kv-cache-figure4.jpg)
+
+- 新增token
+![figure5](images/kv-cache-figure5.jpg)
+
+# 4 加速效果展示
+让我们使用[transformers库🤗](https://github.com/huggingface/transformers)来比较使用和不使用KV缓存时GPT-2的生成速度.<br>
+
+- 代码如下：
+```
+import numpy as np
+import time
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+model = AutoModelForCausalLM.from_pretrained("gpt2").to(device)
+
+for use_cache in (True, False):
+  times = []
+  for _ in range(10):  # measuring 10 generations
+    start = time.time()
+    model.generate(**tokenizer("What is KV caching?", return_tensors="pt").to(device), use_cache=use_cache, max_new_tokens=1000)
+    times.append(time.time() - start)
+  print(f"{'with' if use_cache else 'without'} KV caching: {round(np.mean(times), 3)} +- {round(np.std(times), 3)} seconds")
+```
+
+- 结果如下：
+在Google Colab笔记本上，使用Tesla T4 GPU，以下是生成1000个新token的平均时间和标准差报告：<br>
+```python
+with KV caching: 11.885 +- 0.272 seconds
+without KV caching: 56.197 +- 1.855 seconds
+```
+
+结果显示，推理速度的差异巨大，而GPU VRAM的使用量可以忽略不计。因此，请确保在您的Transformer模型中使用KV缓存！<br>
+
 # 5 参考链接
 [参考链接1](https://jalammar.github.io/illustrated-gpt2/)
+[参考链接2](https://kipp.ly/transformer-inference-arithmetic/#kv-cache)
+[参考链接3](https://juejin.cn/post/7294638699418042378?from=search-suggest)
 
