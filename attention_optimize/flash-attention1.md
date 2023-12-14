@@ -44,13 +44,16 @@ GPU具有大量的线程来执行操作（called a kernel）。每个内核从HB
 加速内存密集型操作最常见的方法是进行内核融合：如果对同一输入应用了多个操作，可以从HBM中一次加载输入，而不是为每个操作多次加载。编译器可以自动融合许多逐元素操作[53, 65, 75]。然而，在模型训练的上下文中，中间值仍然需要被写入HBM以便在反向传播过程中保存，这降低了朴素内核融合的有效性。<br>
 
 ## 2.2 Standard Attention Implementation
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;给定输入序列 $Q、K、V ∈ R^{N×d}$ ，其中 N 是序列长度，d 是头维度（head dimension），我们想要计算注意力输出 $O ∈ R^{N×d}$。
-$$\mathbf{S}=\mathbf{Q K}^{\top} \in \mathbb{R}^{N \times N}, \quad \mathbf{P}=softmax(\mathbf{S}) \in \mathbb{R}^{N \times N}, \quad \mathbf{O}=\mathbf{P V} \in \mathbb{R}^{N \times d},$$
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;给定输入序列 $Q、K、V ∈ R^{N×d}$ ，其中 N 是序列长度，d 是头维度（head dimension），我们想要计算注意力输出 $O ∈ R^{N×d}$ 。
+
+$$\mathbf{S}=\mathbf{Q K}^{\top} \in \mathbb{R}^{N \times N}, \quad \mathbf{P}=softmax(\mathbf{S}) \in \mathbb{R}^{N \times N}, \quad \mathbf{O}=\mathbf{P V} \in \mathbb{R}^{N \times d}$$
+
 这里，softmax 按行(row-wise)来进行。
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;标准的注意力实现将矩阵 S 和 P 实例化到 HBM 中，这需要 O(N^2) 的内存。通常情况下，N>>d（例如，对于GPT2，N=1024，d=64）。我们在算法0中描述了标准的注意力实现。由于一些或大部分操作是内存密集型的（例如softmax），大量的内存访问会导致较慢的实际执行时间<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这个问题在应用于注意力矩阵的其他逐元素操作时会变得更加严重，例如应用于 S 的掩码操作或应用于 P 的dropout操作。因此，已经有很多尝试将多个逐元素操作融合在一起，例如将掩码操作与softmax操作融合在一起[77]。<br>
 在第3.2节中，我们将展示标准的注意力实现在序列长度 N 方面进行 HBM 访问的二次方增长。我们还将比较标准注意力和我们的方法（FlashAttention）的FLOPs数量和HBM访问数量。<br>
-![algorithm0](./images/flash_attention1_algorithm0.jpg)
+
+![algorithm0](images/flash_attention1_algorithm0.jpg)
 
 # 3 FlashAttention：算法、分析和扩展
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们展示了如何在减少HBM读写次数的同时计算精确的注意力，而无需存储大型中间矩阵用于反向传播。这产生了一个既内存高效又在实际执行时间上更快的注意力算法。我们对其IO复杂度进行了分析，表明与标准注意力相比，我们的方法需要更少的HBM访问次数。我们进一步展示了FlashAttention可以作为一个有用的基本原语，通过将其扩展为处理块稀疏注意力。<br>
@@ -73,7 +76,8 @@ $$softmax(x)=\frac{f(x)}{\ell(x)}.$$
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;因此，如果我们跟踪一些额外的统计信息(𝑚(𝑥), ℓ(𝑥))，我们可以一次处理一个块计算 softmax。因此，我们将输入 Q、K、V 分成块（算法1的第3行），同时计算 softmax 值和额外的统计信息（算法1的第10行），然后将结果组合起来（算法1的第12行）。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**重计算**。我们的目标之一是不在反向传播过程中存储𝑂(𝑁^2)个中间值。反向传播通常需要矩阵S、P ∈ R^N×N来计算相对于Q、K、V的梯度。然而，通过存储输出O和softmax归一化统计信息(𝑚, ℓ)，我们可以在反向传播过程中从SRAM中的Q、K、V块轻松地重新计算注意力矩阵S和P。这可以看作是一种选择性梯度检查点[10, 34]的形式。虽然已经提出了梯度检查点技术来减少所需的最大内存量[66]，但所有已知的实现都需要以速度换取内存。相比之下，即使有更多的FLOPs，我们的重计算由于减少了HBM访问次数而加速了反向传播过程（图2）。完整的反向传播描述详见附录B。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;实现细节：核融合。切片使我们能够在一个CUDA核函数中实现我们的算法，从HBM加载输入数据，执行所有的计算步骤（矩阵乘法、softmax、可选的掩码和dropout、矩阵乘法），然后将结果写回到HBM（掩码和dropout见附录B）。这避免了反复从HBM读取和写入输入和输出的操作。<br>
-![algorithm1](./images/flash_attention1_algorithm1.jpg)
+
+![algorithm1](images/flash_attention1_algorithm1.jpg)
 
 flashattention 步骤概述：
 Q K V 三个矩阵的形状均为[N x d], 芯片上 SRAM 尺寸为大小为 M 个elements.
@@ -95,7 +99,9 @@ Q K V 三个矩阵的形状均为[N x d], 芯片上 SRAM 尺寸为大小为 M �
 16. 将O 返回
 
 ## 3.2 分析：FlashAttention 的IO 复杂度
-![figure2](./images/flash_attention1_figure2.jpg)<br>
+
+![figure2](./images/flash_attention1_figure2.jpg)
+
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;图2：左图：在A100 GPU上，GPT-2中型模型（序列长度1024，头维度64，16个头，批大小64）的标准注意力和FlashAttention的前向+后向运行时间。HBM访问是影响运行时间的主要因素。中间图：在A100 GPU上，FlashAttention的前向运行时间（序列长度1024，头维度64，16个头，批大小64）。较少的HBM访问次数导致更快的运行时间，直到某个点为止。右图：对于序列长度为4K的块稀疏FlashAttention，运行时间比FlashAttention快，其比例与稀疏度成比例。
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们分析了FlashAttention的IO复杂度，展示了与标准注意力相比HBM访问次数的显著减少。我们还提供了一个下界，证明没有任何精确的注意力算法能够在所有SRAM大小上渐近地改善HBM访问次数。证明详见附录C。<br>
 
@@ -131,33 +137,39 @@ $$S = QK^{T} \in R^{N \times N}, \quad P=softmax(S \odot 1_{\tilde{M}}) \in R^{N
 ![table1](./images/flash_attention1_table1.jpg) <br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**GPT-2.** FlashAttention在大型OpenWebtext数据集[32]上训练的GPT-2 [67]比广泛使用的HuggingFace [87]和Megatron-LM [77]实现具有更快的训练时间。表格2显示与HuggingFace相比，最多可实现3倍的端到端加速，与Megatron-LM相比可实现1.7倍的加速。FlashAttention实现了与其他两种实现相同的困惑度，因为我们没有改变模型定义。
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;附录E中包含了训练过程中验证困惑度的图表，确认FlashAttention与基准模型具有相同的数值稳定性，并产生相同的训练/验证曲线。
+
 ![table2](./images/flash_attention1_table2.jpg)
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;长范围竞技场（Long-range Arena）。我们在长范围竞技场（LRA [80]）基准测试中比较了普通Transformer（使用标准实现或FlashAttention）的性能。我们测量了所有模型的准确性、吞吐量和训练时间。每个任务的序列长度在1024到4096之间不同。我们遵循Tay等人[80]和Xiong等人[90]的实现和实验设置。
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;表格3显示，与标准注意力相比，FlashAttention的速度提高了最多2.4倍。块稀疏FlashAttention比我们测试过的所有近似注意力方法都更快。<br>
+
 ![table3](./images/flash_attention1_table4.jpg)
 
 ## 4.2 Better Models with Longer Sequences
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**使用长上下文进行语言建模**.FlashAttention的运行时间和内存效率使我们能够将GPT-2的上下文长度增加4倍，同时仍然比来自Megatron-LM的优化实现更快。表格4显示，使用FlashAttention和上下文长度为4K的GPT-2仍然比使用上下文长度为1K的Megatron的GPT-2快30%，同时实现了更好的0.7困惑度
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**使用长上下文进行语言建模**.FlashAttention的运行时间和内存效率使我们能够将GPT-2的上下文长度增加4倍，同时仍然比来自Megatron-LM的优化实现更快。表格4显示，使用FlashAttention和上下文长度为4K的GPT-2仍然比使用上下文长度为1K的Megatron的GPT-2快30%，同时实现了更好的0.7困惑度. <br>
+
 ![table4](./images/flash_attention1_table4.jpg)
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**长文档分类**。使用FlashAttention训练具有更长序列的Transformer可以提高MIMIC-III [47]和ECtHR [6, 7]数据集上的性能。MIMIC-III包含重症监护病房患者出院摘要，每个摘要都带有多个标签。ECtHR包含来自欧洲人权法院的法律案件，每个案件都与据称违反的《人权公约》的条款相关联。这两个数据集都包含非常长的文本文档；MIMIC中的平均标记数为2,395个，最长的文档包含14,562个标记，而ECtHR中的平均标记数和最长标记数分别为2,197和49,392个。我们评估了将预训练的RoBERTa模型 [56]的序列长度增加后的性能提升（我们像Beltagy等人[3]那样重复位置嵌入）。<br>
+
 ![figure3](./images/flash_attention1_figure3.jpg)
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;表格5显示，在MIMIC数据集上，序列长度16K的性能比长度512高出4.3个点，在ECtHR数据集上，序列长度8K的性能比长度512高出8.5个点。这些差异可能是由于微小的分布变化引起的：MIMIC-III包含专门的医学文本，因此对文档长度的分布变化可能更敏感，而ECtHR包含一般语言。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;表格5显示，在MIMIC数据集上，序列长度16K的性能比长度512高出4.3个点，在ECtHR数据集上，序列长度8K的性能比长度512高出8.5个点。这些差异可能是由于微小的分布变化引起的：MIMIC-III包含专门的医学文本，因此对文档长度的分布变化可能更敏感，而ECtHR包含一般语言。<br>
+
 ![table5](./images/flash_attention1_table5.jpg)<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Path-X和Path-256。Path-X和Path-256是长范围竞技场基准测试中的挑战性任务，旨在测试长上下文。该任务是对黑白128×128（或256×256）图像中的两个点是否存在连接路径进行分类，图像以每个像素一个的方式输入Transformer模型。在先前的工作中，所有Transformer模型要么内存耗尽，要么只能达到随机性能[80]。人们一直在寻找能够建模这种长上下文的替代架构[37]。我们在这里呈现了Transformer模型能够解决Path-X和Path-256的首个结果（表格6）。我们在Path-64上预训练了一个Transformer模型，然后通过空间插值来将位置嵌入传递到Path-X上。FlashAttention在Path-X上达到了61.4的准确率。此外，块稀疏FlashAttention使得Transformer模型能够扩展到序列长度为64K，Path-256上达到了63.1的准确率。
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Path-X和Path-256。Path-X和Path-256是长范围竞技场基准测试中的挑战性任务，旨在测试长上下文。该任务是对黑白128×128（或256×256）图像中的两个点是否存在连接路径进行分类，图像以每个像素一个的方式输入Transformer模型。在先前的工作中，所有Transformer模型要么内存耗尽，要么只能达到随机性能[80]。人们一直在寻找能够建模这种长上下文的替代架构[37]。我们在这里呈现了Transformer模型能够解决Path-X和Path-256的首个结果（表格6）。我们在Path-64上预训练了一个Transformer模型，然后通过空间插值来将位置嵌入传递到Path-X上。FlashAttention在Path-X上达到了61.4的准确率。此外，块稀疏FlashAttention使得Transformer模型能够扩展到序列长度为64K，Path-256上达到了63.1的准确率。<br>
 
 ## 4.3 Benchmarking Attention
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们变化序列长度，并在配备40 GB HBM的一块A100 GPU上使用FlashAttention和块稀疏FlashAttention与各种注意力基准进行运行时间和内存使用的测量，包括使用dropout和填充掩码。我们与精确注意力、近似注意力和稀疏注意力的参考实现进行比较。在正文中，我们报告了一部分基准测试结果；附录E中包含更多的基准测试和详细信息。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**运行时间**。图3（左侧）报告了FlashAttention和块稀疏FlashAttention的前向+后向传递的运行时间（以毫秒为单位），与精确、近似和稀疏注意力的基准测试进行了比较（具体数字见附录E）。运行时间随着序列长度的增加呈二次增长，但是FlashAttention的运行速度比精确注意力的基准测试快得多，比PyTorch实现快3倍。许多近似/稀疏注意力机制的运行时间与序列长度成线性增长，但由于内存访问较少，FlashAttention在短序列上仍然比近似和稀疏注意力更快。近似注意力的运行时间在序列长度在512到1024之间开始与FlashAttention相交。另一方面，块稀疏FlashAttention在所有的序列长度上都比我们所知的所有精确、稀疏和近似注意力的实现都更快<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**内存占用**。图3（右侧）显示了FlashAttention和块稀疏FlashAttention与各种精确、近似和稀疏注意力基准测试相比的内存占用。FlashAttention和块稀疏FlashAttention具有相同的内存占用，随着序列长度的增加呈线性增长。FlashAttention比精确注意力基准测试更节省内存，最多节省20倍，并且比近似注意力基准测试更节省内存。除了Linformer之外，所有其他算法在A100 GPU上在64K之前就会耗尽内存，而FlashAttention的效率仍然是Linformer的2倍。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**运行时间**。图3（左侧）报告了FlashAttention和块稀疏FlashAttention的前向+后向传递的运行时间（以毫秒为单位），与精确、近似和稀疏注意力的基准测试进行了比较（具体数字见附录E）。运行时间随着序列长度的增加呈二次增长，但是FlashAttention的运行速度比精确注意力的基准测试快得多，比PyTorch实现快3倍。许多近似/稀疏注意力机制的运行时间与序列长度成线性增长，但由于内存访问较少，FlashAttention在短序列上仍然比近似和稀疏注意力更快。近似注意力的运行时间在序列长度在512到1024之间开始与FlashAttention相交。另一方面，块稀疏FlashAttention在所有的序列长度上都比我们所知的所有精确、稀疏和近似注意力的实现都更快. <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**内存占用**。图3（右侧）显示了FlashAttention和块稀疏FlashAttention与各种精确、近似和稀疏注意力基准测试相比的内存占用。FlashAttention和块稀疏FlashAttention具有相同的内存占用，随着序列长度的增加呈线性增长。FlashAttention比精确注意力基准测试更节省内存，最多节省20倍，并且比近似注意力基准测试更节省内存。除了Linformer之外，所有其他算法在A100 GPU上在64K之前就会耗尽内存，而FlashAttention的效率仍然是Linformer的2倍。 <br>
 
 # 5 限制和未来方向（limitations and futrue directions）
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们讨论了我们方法的局限性和未来的方向。附录A中提供了相关工作的信息。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们讨论了我们方法的局限性和未来的方向。附录A中提供了相关工作的信息。<br>
 
-**编译为CUDA**。我们目前构建IO感知的注意力实现的方法需要为每个新的注意力实现编写一个新的CUDA内核。这要求使用比PyTorch更低级别的语言编写注意力算法，并需要大量的工程工作。实现可能也无法在不同的GPU架构之间进行转移。这些限制表明需要一种方法，支持使用高级语言（如PyTorch）编写注意力算法，并将其编译为IO感知的CUDA实现，类似于图像处理中的Halide等工作[70]。
+**编译为CUDA**。我们目前构建IO感知的注意力实现的方法需要为每个新的注意力实现编写一个新的CUDA内核。这要求使用比PyTorch更低级别的语言编写注意力算法，并需要大量的工程工作。实现可能也无法在不同的GPU架构之间进行转移。这些限制表明需要一种方法，支持使用高级语言（如PyTorch）编写注意力算法，并将其编译为IO感知的CUDA实现，类似于图像处理中的Halide等工作[70]。<br>
 
-**IO感知的深度学习**。我们认为IO感知方法可以扩展到注意力之外。注意力是Transformer中内存密集型的计算，但是深度网络中的每一层都会触及GPU HBM。我们希望我们的工作能够激发对其他模块进行IO感知实现的工作。我们在附录D中讨论了这些潜在的扩展。
+**IO感知的深度学习**。我们认为IO感知方法可以扩展到注意力之外。注意力是Transformer中内存密集型的计算，但是深度网络中的每一层都会触及GPU HBM。我们希望我们的工作能够激发对其他模块进行IO感知实现的工作。我们在附录D中讨论了这些潜在的扩展。<br>
 
-**多GPU的IO感知方法**。我们对注意力的IO感知实现在单个GPU上是最优的。然而，注意力计算可能可以在多个GPU上并行化[72]。使用多个GPU会增加IO分析的额外层次，需要考虑GPU之间的数据传输。我们希望我们的工作能够激发未来在这个方向上的研究工作。
+**多GPU的IO感知方法**。我们对注意力的IO感知实现在单个GPU上是最优的。然而，注意力计算可能可以在多个GPU上并行化[72]。使用多个GPU会增加IO分析的额外层次，需要考虑GPU之间的数据传输。我们希望我们的工作能够激发未来在这个方向上的研究工作。<br>
