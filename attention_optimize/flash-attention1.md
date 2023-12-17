@@ -120,7 +120,9 @@ Q K V 三个矩阵的形状均为[N x d], 芯片上 SRAM 尺寸为大小为 M �
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们将FlashAttention扩展为近似注意力的块稀疏FlashAttention。其输入输出复杂度相对于FlashAttention来说，与稀疏度成比例的因子更小.<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;给定输入Q、K、 $V \in R^{𝑁𝑑}$ 和掩码矩阵 $M \in \left\lbrace0, 1\right\rbrace^{𝑁×𝑁}$ ,我们希望计算：
 $$S = QK^{T} \in R^{N \times N}, \quad P=softmax(S \odot 1_{\tilde{M}}) \in R^{N \times N}, \quad O = PV \in R^{N \times d},$$
-![figure](./images/flash_attention1_text1.jpg)<br>
+
+![figure](images/flash_attention1_text1.jpg)<br>
+
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;给定预定义的块稀疏掩码矩阵 $M \in \left\lbrace0, 1\right\rbrace^(𝑁/𝐵𝑟)×(𝑁/𝐵𝑐)$ ，我们可以轻松地调整算法1，仅计算注意力矩阵的非零块。该算法与算法1相同，只是我们跳过零块。我们在附录B中复制了算法描述，具体见算法5。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们还分析了块稀疏FlashAttention的输入输出复杂度。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**命题4**：设 𝑁 为序列长度，𝑑 为头维度，𝑀 为 SRAM 的大小，其中 𝑑 ≤ 𝑀 ≤ 𝑁𝑑。块稀疏FlashAttention（算法5）需要 $Θ(𝑁𝑑 + 𝑁^{2}𝑑^{2}𝑀^{-1}𝑠)$ 次 HBM 访问，其中 𝑠 是块稀疏掩码中非零块的比例.我们可以看到，应用块稀疏性直接通过稀疏性改进了IO复杂性中较大的项。对于较大的序列长度𝑁，𝑠通常设置为 $𝑁^{-1/2}$ [11]或 $𝑁^{-1}log𝑁$ [3, 17, 92]，导致 $\Theta(N \sqrt{N})$ 或 $\Theta(N \log N)$ 的IO复杂性。在后续的实验中，我们使用固定的蝴蝶稀疏模式[17]，已经证明能够近似任意稀疏性[16]。在图2（右图）中，我们验证了随着稀疏度的增加，块稀疏FlashAttention的运行时间成比例地改善。在LRA基准测试中，块稀疏FlashAttention实现了2.8倍的加速，在性能上与标准注意力相当（第4节）。<br>
@@ -135,8 +137,10 @@ $$S = QK^{T} \in R^{N \times N}, \quad P=softmax(S \odot 1_{\tilde{M}}) \in R^{N
 附录E中提供了额外的实验细节。
 
 ## 4.1 使用FlashAttention加速模型
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**BERT.** FlashAttention提供了我们所知道的最快的单节点BERT训练速度。我们在维基百科上使用FlashAttention训练了一个BERT-large [22]模型。表格1将我们的训练时间与Nvidia的实现进行了比较，该实现在MLPerf 1.1 [58]中创造了训练速度记录。我们的实现比他们快15%。
-![table1](./images/flash_attention1_table1.jpg) <br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**BERT.** FlashAttention提供了我们所知道的最快的单节点BERT训练速度。我们在维基百科上使用FlashAttention训练了一个BERT-large [22]模型。表格1将我们的训练时间与Nvidia的实现进行了比较，该实现在MLPerf 1.1 [58]中创造了训练速度记录。我们的实现比他们快15%。 <br>
+
+![table1](./images/flash_attention1_table1.jpg)
+
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**GPT-2.** FlashAttention在大型OpenWebtext数据集[32]上训练的GPT-2 [67]比广泛使用的HuggingFace [87]和Megatron-LM [77]实现具有更快的训练时间。表格2显示与HuggingFace相比，最多可实现3倍的端到端加速，与Megatron-LM相比可实现1.7倍的加速。FlashAttention实现了与其他两种实现相同的困惑度，因为我们没有改变模型定义。
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;附录E中包含了训练过程中验证困惑度的图表，确认FlashAttention与基准模型具有相同的数值稳定性，并产生相同的训练/验证曲线。
 
