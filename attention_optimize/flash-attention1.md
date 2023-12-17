@@ -18,7 +18,7 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本论文中，我们认为一个没被注意到的原则是使注意力算法具有IO感知性[1]，即仔细考虑对不同级别的快速和慢速存储器(memory)进行读写操作（例如，在快速GPU 芯片上SRAM和相对较慢的GPU高带宽存储器之间，如图1所示，左侧）。在现代GPU上，计算速度已经超过了内存速度[61, 62, 63]，而Transformer中的大多数操作都受到内存访问的瓶颈[43]。在读取和写入数据占据了运行时间的很大部分的内存受限操作中(IO密集型operator中)，IO感知算法至关重要，例如数据库连接[71]、图像处理[70]、数值线性代数[4]等等[40, 85]。然而，诸如PyTorch和Tensorflow等深度学习的常见Python接口并不允许对内存访问进行细粒度的控制。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们提出了一种名为FlashAttention的新型注意力算法，它可以在较少的内存访问次数下计算精确的注意力。我们的主要目标是避免将注意力矩阵读取和写入到HBM。为实现这一目标，我们采用了两种成熟的技术来解决这些挑战。(i) 我们重构了注意力计算过程，将输入分割成块，并对输入块进行多次处理，从而逐步执行softmax归一化操作（也称为切片）。(ii) 我们在前向传播中存储了softmax归一化因子，以便在后向传播中快速重新计算注意力，这比从HBM中读取中间注意力矩阵的标准方法更快。我们使用CUDA实现了FlashAttention，以实现对内存访问的细粒度控制，并将所有注意力操作融合到一个GPU内核中。尽管由于重新计算而增加了浮点运算量，但由于大大减少了对HBM的访问量，我们的算法比标准注意力运行得更快（如图1右图所示，GPT-2上最高可达7.6倍），并且使用的内存量与序列长度呈线性关系。<br>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们对FlashAttention的IO复杂性进行了分析[1]，证明它需要 $𝑂(𝑁^{2}𝑑^{2}𝑀^{−1})次HBM访问，其中𝑑是头部维度，𝑀是SRAM的大小，而标准注意力需要𝑂(𝑁^{𝑑} + 𝑁^{2})次访问。对于典型的𝑑和𝑀值，与标准注意力相比，FlashAttention需要较少的HBM访问次数（如图2所示，最多减少了9倍）。此外，我们还提供了一个下界，表明没有任何精确的注意力算法可以在所有SRAM大小上渐近地改善HBM访问次数的数量。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们对FlashAttention的IO复杂性进行了分析[1]，证明它需要 $𝑂(𝑁^{2}𝑑^{2}𝑀^{−1})$ 次HBM访问，其中𝑑是头部维度，𝑀是SRAM的大小，而标准注意力需要 $𝑂(𝑁^{𝑑} + 𝑁^{2})$ 次访问。对于典型的𝑑和𝑀值，与标准注意力相比，FlashAttention需要较少的HBM访问次数（如图2所示，最多减少了9倍）。此外，我们还提供了一个下界，表明没有任何精确的注意力算法可以在所有SRAM大小上渐近地改善HBM访问次数的数量。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们还展示了FlashAttention作为实现近似注意力算法潜力的有用基元的能力，克服了它们在内存访问开销方面的问题。作为概念验证，我们实现了块稀疏的FlashAttention，这是一种稀疏(sparse)的注意力算法，比FlashAttention本身快2-4倍，可以扩展到长度为64k的序列。我们证明了块稀疏的FlashAttention具有比FlashAttention更好的IO复杂性，其比例与稀疏比例成正比。在第5节中，我们讨论了对其他操作(operations)的进一步扩展（多GPU上的注意力，核回归，块稀疏矩阵乘法）。我们将FlashAttention开源，以使构建在这个基元之上变得更加容易。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们通过实证验证了FlashAttention在模型训练中的加速效果，并通过对更长上下文进行建模来提高模型质量。我们还对FlashAttention和块稀疏的FlashAttention与之前的注意力实现进行了运行时和内存占用的基准测试。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**更快的模型训练**
@@ -51,7 +51,7 @@ GPU具有大量的线程来执行操作（called a kernel）。每个内核从HB
 $$\mathbf{S}=\mathbf{Q K}^{\top} \in \mathbb{R}^{N \times N}, \quad \mathbf{P}=softmax(\mathbf{S}) \in \mathbb{R}^{N \times N}, \quad \mathbf{O}=\mathbf{P V} \in \mathbb{R}^{N \times d}$$
 
 这里，softmax 按行(row-wise)来进行。
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;标准的注意力实现将矩阵 S 和 P 实例化到 HBM 中，这需要 O(N^2) 的内存。通常情况下，N>>d（例如，对于GPT2，N=1024，d=64）。我们在算法0中描述了标准的注意力实现。由于一些或大部分操作是内存密集型的（例如softmax），大量的内存访问会导致较慢的实际执行时间<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;标准的注意力实现将矩阵 S 和 P 实例化到 HBM 中，这需要 $O(N^{2})$  的内存。通常情况下，$N>>d$ （例如，对于GPT2，N=1024，d=64）。我们在算法0中描述了标准的注意力实现。由于一些或大部分操作是内存密集型的（例如softmax），大量的内存访问会导致较慢的实际执行时间<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这个问题在应用于注意力矩阵的其他逐元素操作时会变得更加严重，例如应用于 S 的掩码操作或应用于 P 的dropout操作。因此，已经有很多尝试将多个逐元素操作融合在一起，例如将掩码操作与softmax操作融合在一起[77]。<br>
 在第3.2节中，我们将展示标准的注意力实现在序列长度 N 方面进行 HBM 访问的二次方增长。我们还将比较标准注意力和我们的方法（FlashAttention）的FLOPs数量和HBM访问数量。<br>
 
