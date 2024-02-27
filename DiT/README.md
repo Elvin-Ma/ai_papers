@@ -29,7 +29,9 @@
 
 # 3 扩散 Transformer
 ## 3.1 准备工作
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**扩散公式。** 在介绍我们的架构之前，我们简要回顾一些基本概念，以便了解扩散模型 (DDPMs) [19, 54]。高斯扩散模型假设存在一个前向加噪过程，逐渐将噪声应用于真实数据 $x_{0}: q(x_{t} \mid x_{0})= \mathcal{N} (x_{t} ; \sqrt{ \bar \alpha_{t}} x_{0}, (1-\bar{\alpha}_{t}) \mathbf{I})$ , 这里 $\bar \alpha_{t}$ 是超参数。通过应用重参数化技巧，我们可以进行采样。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**扩散公式。** 在介绍我们的架构之前，我们简要回顾一些基本概念，以便了解扩散模型 (DDPMs) [19, 54]。高斯扩散模型假设存在一个前向加噪过程，逐渐将噪声应用于真实数据 $x_{0}: q(x_{t} \mid x_{0})= \mathcal{N} (x_{t} ; \sqrt{ \bar \alpha_{t}} x_{0}, (1-\bar \alpha_{t}) \mathbf{I})$ , 这里 $\bar \alpha_{t}$ 是超参数。通过应用重参数化技巧，我们可以进行采样 $x_{t}=\sqrt{\bar \alpha_{t}} x_{0}+\sqrt{1-\bar \alpha_{t}} \epsilon_{t}$ , 这里  $\epsilon_{t} \sim \mathcal{N}(0, \mathbf{I})$ 。<br>
+
+
 
 
 
