@@ -31,6 +31,10 @@
 ## 3.1 准备工作
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**扩散公式。** 在介绍我们的架构之前，我们简要回顾一些基本概念，以便了解扩散模型 (DDPMs) [19, 54]。高斯扩散模型假设存在一个前向加噪过程，逐渐将噪声应用于真实数据 $x_{0}: q(x_{t} \mid x_{0})= \mathcal{N} (x_{t} ; \sqrt{ \bar \alpha_{t}} x_{0}, (1-\bar \alpha_{t}) \mathbf{I})$ , 这里 $\bar \alpha_{t}$ 是超参数。通过应用重参数化技巧，我们可以进行采样 $x_{t}=\sqrt{\bar \alpha_{t}} x_{0}+\sqrt{1-\bar \alpha_{t}} \epsilon_{t}$ , 这里  $\epsilon_{t} \sim \mathcal{N}(0, \mathbf{I})$ 。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;扩散模型通过训练来学习逆前向过程的噪音： $p_{θ}(x_{t−1} | x_{t}) = \mathcal{N}(µ_{θ}(x_{t}), Σθ(x_{t}))$ ，其中神经网络用于预测 $p_{θ}$ 的统计信息。逆处理模型是使用 $P(x_{0})$ 的变分下界[30]训练的，该下界可简化为 $\mathcal L(θ) = -p(x0|x1) + Σ_{t} \mathcal D_{K L}(q*(x_{t−1} | x_{t}, x_{0}) || p_{θ}(x_{t−1} | x_{t}))$ ，其中排除了训练无关的额外项。 由于 $q*$ 和 $p_{θ}$ 都是高斯分布，可以使用两个分布的均值和协方差来评估 $\mathcal D_{KL}$ 。通过将 $µ_{θ}$ 重新参数化为噪声预测网络 $\varepsilon_{θ}$ ，可以使用预测的噪声 $\varepsilon_{θ}(x_{t})$ 和采样的高斯噪声 $\varepsilon_{t}$ 之间的简单均方误差来训练模型： $\mathcal L_{simple}(\theta)=||\epsilon_{\theta} (x_{t}) - \epsilon_{t}||_{2}^{2}$ 。为了使用学习的反向过程协方差 $\Sigma _{\theta}$ 来训练扩散模型，需要优化完整的 $ \mathcal D _{KL}$ 项。我们遵循Nichol和Dhariwal的方法[36]：使用 $\mathcal L _{simple}$ 训练 $\epsilon _{\theta}$ ,使用完整的 $\mathcal L$ 训练Σθ。一旦 $p _{θ}$ 训练完成，可以通过初始化 $x _{t _{max}} ∼ N(0, I)$ 并使用重参数化技巧从 $p _{θ}(x _{t−1} | x_{t})$ 中采样 $x _{t−1}$来生成新的图像。 <br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;无分类器指导。条件扩散模型将额外的信息作为输入，例如类别标签c。在这种情况下，反向过程变为 $pθ(x_{t−1} |x_{t}, c)$ ，其中 $\epsilon_{θ}$ 和 $Σ_{θ}$ 以c为条件。在这种设置下，可以使用无分类器指导来鼓励采样过程找到 $log p(c|x)$ 较高的x。根据贝叶斯法则: $\log p(c \mid x) \propto \log p(x \mid c)-\log p(x)$ , 因此 $\nabla_{x} \log p(c \mid x) \propto \nabla_{x} \log p(x \mid c)-\nabla_{x} \log p(x)$ . 通过将扩散模型的输出解释为得分函数，可以通过以下方式来引导DDPM采样过程以高概率p(x|c)采样x: $\hat{\epsilon}_{\theta} (x_{t}, c) = \epsilon_{\theta}(x_{t}, \emptyset) + s \cdot \nabla_{x} \log p(x \mid c) \propto \epsilon_{\theta}(x_{t}, \emptyset) + s \cdot(\epsilon_{\theta}(x_{t}, c)-\epsilon_{\theta}(x_{t}, \emptyset))  $ ，其中s > 1表示指导的尺度（注意，s = 1表示恢复标准采样）。<br>
+
 
 
 
