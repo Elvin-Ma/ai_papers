@@ -48,9 +48,11 @@
 
 ![algorithm1](images/SDXL-algorithm1.jpg)
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;根据我们的经验，大规模数据集平均上是以对象为中心的，因此在推断过程中，我们将 $(c_{top}, c_{left})$ 设置为(0, 0)，从而从训练好的模型中获得以对象为中心的样本。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;请参见图5进行说明：通过调整 $(c_{top} , c_{left})$ ，我们可以成功地在推断过程中模拟裁剪的数量。这是一种条件化增强的形式，已经在各种形式的自回归模型[20]和最近的扩散模型[21]中使用过。<br>
 
+![figure5](images/SDXL-figure5.jpg)
 
-
-
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;虽然像数据分桶[31]这样的其他方法成功地解决了同样的任务，但我们仍然从裁剪引起的数据增强中受益，同时确保它不会泄漏到生成过程中——我们实际上将其用于我们的优势，以更好地控制图像合成过程。此外，它易于实现，并且可以在训练过程中以在线方式应用，无需额外的数据预处理。<br>
 
 
