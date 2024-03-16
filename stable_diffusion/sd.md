@@ -48,14 +48,18 @@
 ## 3.2 Latent Diffusion Models
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;扩散模型[82]是一种概率模型，旨在通过逐渐去噪一个符合正态分布的变量来学习数据分布p(x)，这**相当于学习长度为T的固定马尔可夫链的逆过程**。对于图像合成，最成功的模型[15,30,72]依赖于对p(x)的变分下界的重新加权变体，这类似于去噪得分匹配[85]。这些模型可以被解释为一系列等权重的去噪自编码器 $\epsilon_{\theta}\left(x_{t}, t\right)$ . t = 1 ... T，它们**被训练用于预测其输入 $x_{t}$ 的去噪变体**，其中 $x_{t}$ 是输入x的含噪版本。相应的目标可以简化为（参见B节）<br>
 
+![algorithm1](images/algorithm1.png)
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通过我们训练的由Encoder和Decoder组成的感知压缩模型，我们现在可以访问一个高效(efficient)、低维(low-dimensional)的潜在空间，其中高频(high-frequency)、难以察觉(imperceptible)的细节被抽象化了。与高维像素空间(pixel space)相比，这个空间更适合基于似然的生成模型，因为它们现在可以（i）专注于数据的重要**语义部分**，（ii）在一个低维、计算效率更高的空间中进行训练。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;与之前依赖于高度压缩的离散潜在空间中的自回归、基于注意力的Transformer模型的工作[23,66,103]不同，我们可以利用我们的模型提供的图像特定的归纳偏好。这包括能够主要使用二维卷积层构建底层UNet，并进一步通过重新加权的边界将目标聚焦在感知上最相关的位上，其形式如下：<br>
 
+![algorithm2](images/algorithm2.png)
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们模型的神经骨干部分 $\epsilon_{\theta}\left(x_{t}$ 是一个基于**时间条件**的UNet [71]。由于前向过程是固定的，在训练过程中可以高效地从Encoder中获取 $z_{t}$ ，并且从p(z)中解码得到的样本可以通过一次Decoder转换到图像空间。<br>
 
-
-
-
+## 3.3 条件机制
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;类似于其他类型的生成模型[56, 83]，扩散模型原则上能够建模形式为p(z|y)的条件分布。这可以通过引入一个**条件去噪自编码器**  $\epsilon_{\theta}\left(x_{t}$  来实现，并为通过输入y（如文本[68]、语义地图[33, 61]或其他图像到图像的转换任务[34]）控制合成过程铺平了道路。<br>
 
 
 
