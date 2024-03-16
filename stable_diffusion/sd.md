@@ -56,10 +56,10 @@
 
 ![algorithm2](images/algorithm2.png)
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们模型的神经骨干部分 $\epsilon_{\theta}\left(x_{t}$ 是一个基于**时间条件**的UNet [71]。由于前向过程是固定的，在训练过程中可以高效地从Encoder中获取 $z_{t}$ ，并且从p(z)中解码得到的样本可以通过一次Decoder转换到图像空间。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们模型的神经骨干部分 $\epsilon_{\theta}(o, t)$ 是一个基于**时间条件**的UNet [71]。由于前向过程是固定的，在训练过程中可以高效地从Encoder中获取 $z_{t}$ ，并且从p(z)中解码得到的样本可以通过一次Decoder转换到图像空间。<br>
 
 ## 3.3 条件机制
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;类似于其他类型的生成模型[56, 83]，扩散模型原则上能够建模形式为p(z|y)的条件分布。这可以通过引入一个**条件去噪自编码器**  $\epsilon_{\theta}\left(x_{t}$  来实现，并为通过输入y（如文本[68]、语义地图[33, 61]或其他图像到图像的转换任务[34]）控制合成过程铺平了道路。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;类似于其他类型的生成模型[56, 83]，扩散模型原则上能够建模形式为p(z|y)的条件分布。这可以通过引入一个**条件去噪自编码器**  $\epsilon_{\theta}(x_{t}, t, y)$ 来实现，并为通过输入y（如文本[68]、语义地图[33, 61]或其他图像到图像的转换任务[34]）控制合成过程铺平了道路。<br>
 
 
 
