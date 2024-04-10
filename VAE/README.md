@@ -72,6 +72,55 @@
 
 ![formula5](images/vae-formula5.png)
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们将这个技术应用于变分下界（方程（2）），得到了我们的通用随机梯度变分贝叶斯（SGVB）估计器。<br>
+
+![formula12](images/vae-formula12.png)
+
+![formula6](images/vae-formula6.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通常，KL散度 $D_{KL}(q_{φ}(z|x^{i}) || p_{θ}(z))$ （见附录B）在数值上可以进行积分，因此只需要通过抽样来估计期望重构误差 $E_{qφ(z|x(i))}[log p_{θ}(x^{i}|z)]$ 。KL散度项可以被解释为对φ进行正则化，**鼓励近似后验接近先验分布** $p_{θ}(z)$ 。这导致了SGVB估计器的第二个版本 $L^{B}(θ, φ; x(i)) ≈ L(θ, φ; x(i))$ , 对应于方程（3），通常比通用估计器具有更小的方差。<br>
+
+![formula7](images/vae-formula7.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;给定数据集X中的多个数据点，其中包含N个数据点，我们可以基于小批量构建整个数据集的**边缘似然下界估计器**：<br>
+
+![formula8](images/vae-formula8.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;其中，小批量 $X^{M} = {x^(i)}$ (i = 1 ... M) 是从包含N个数据点的完整数据集X中随机抽取的M个数据点的样本。在我们的实验中，我们发现只要小批量大小M足够大（例如M = 100），每个数据点的样本数L可以设置为1。可以计算出导数 $∇_{θ,φ}L(θ; XM)$ , 并且可以将得到的梯度与随机优化方法（如SGD或Adagrad[DHS10]）结合使用。请参考算法1以了解计算随机梯度的基本方法。<br>
+
+![algorithm](images/vae-algorithm.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当观察到方程（7）中给出的目标函数时，与自编码器的联系变得清晰起来。第一项是**近似后验与先验之间的KL散度**，起到了**正则化**的作用，而第二项是期望的负rebuild误差。函数 $g_{φ}(.)$ 被选择为将数据点x(i)和随机噪声向量ε(l)映射到来自该数据点的近似后验的样本: $z(i,l) = g_{φ}(ε(l) , x(i))$ , 其中 $z(i,l) ∼ q_{φ}(z|x(i))$ 。随后，样本z(i,l)被输入到函数 $log p_{θ}(x(i)|z(i,l))$ 中，该函数表示给定z(i,l)下，数据点x(i)在生成模型下的概率密度（或质量）。这一项在自编码器中被称为**负重构误差**。<br>
+
+## 2.4 重参数化技巧
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了解决我们的问题，我们引入了一种从 $q_{φ}(z|x)$ 中**生成样本**的替代方法。基本的参数化技巧非常简单。假设z是一个连续随机变量，而 $z ∼ q_{φ}(z|x)$ 是某个**条件分布** 。通常可以将随机变量z表示为**确定性变量** $z = g_{φ}(ε, x)$ ，其中ε是具有独立边际分布p(ε)的辅助变量，而 $g_{φ}(.)$ 是由φ参数化的某个向量值函数。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种重参数化对我们的情况非常有用，因为它可以用来重写关于 $q_{φ}(z|x)$ 的期望，从而使得关于φ的蒙特卡洛估计的期望是**可微的**。根据确定性映射 $z = g_{φ}(ε, x)$ ，我们知道 $q_{φ}(z|x)dz = p(ε)dε$ 。因此，可以得到以下结果： $∫ q_{φ}(z|x) f(z) dz = ∫ p(ε) f(z) dε = ∫ p(ε) f(g_{φ}(ε, x)) dε$ 。由此可以得出，可以构建一个可微的估计器：<br>
+
+![formula13](images/vae-formula13.png)
+
+其中 $ε^{l} ∼ p(ε)$ 。在第2.3节中，我们应用了这个技巧来获得**变分下界的可微估计器**。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;以单变量高斯分布为例：假设 z ∼ p(z|x) = N(µ, σ²)。在这种情况下，一个有效的重参数化是 z = µ + σε，其中 ε 是一个辅助噪声变量，ε ∼ N(0, 1)。因此：
+
+![formula14](images/vae-formula14.png)
+
+此处: $ε^l ∼ N (0, 1)$ .<br>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
