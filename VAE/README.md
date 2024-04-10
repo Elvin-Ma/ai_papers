@@ -45,24 +45,35 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;从编码理论的角度来看，未观测的变量 z 可以被解释为**潜在表示(latent)或编码(code)**。因此，在本文中，我们还将将识别模型 $q_{φ}(z|x)$ 称为**概率编码器(加上概率的编码器)**，因为给定数据点 x，它会生成一个分布(生成的是一个分布：例如高斯分布)，表示数据点 x 可能生成的编码 z 的**可能取值范围(是一个范围)**。类似地，我们将 $p_{θ}(x|z)$ 称为概率解码器，因为给定编码 z，它会生成一个分布，表示可能**对应的 x 的取值范围**。<br>
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;边缘似然是由对各个数据点的边缘似然之和组成的：log pθ(x₁, ..., xₙ) = Σᴺᵢ₌₁ log pθ(xᵢ) 其中，每个边缘似然可以被重新表示为：<br>
-![formula1](images/formula1.png)
+![formula1](images/vae-formula1.png)
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;右侧第一个项是**近似后验**与**真实后验**的KL散度（Kullback-Leibler divergence）。由于KL散度非负，因此右侧第二个项 $L(θ, φ; x(i))$ 被称为数据点 i 的边缘似然的（变分）下界，可以表示为：<br>
 
-![formula2](images/formula2.png)
+![formula2](images/vae-formula2.png)
 
 这也可以写成：<br>
 
-![formula3](images/formula3.png)
+![formula3](images/vae-formula3.png)
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们希望针对变分参数 φ 和生成参数 θ 对下界 L(θ, φ; x(i)) 进行求导和优化。然而，关于 φ 的下界梯度存在一些问题。对于这种类型的问题，通常（朴素地）使用蒙特卡洛梯度估计器，其形式为：<br>
 
-![formula11](images/formula11.png)
+![formula11](images/vae-formula11.png)
 
 此处， $z(l) ∼ q_{φ}(z|x(i))$ 。这个梯度估计器表现出非常高的方差（参见例如[BJP12]），并且对于我们的目的来说是**不实用的**。<br>
 
 ## 2.3 SGVB估计器和AEVB算法
-在本节中，我们介绍下界的一个实用估计器及其对参数的导数。我们假设近似后验形式为 $q_{φ}(z|x)$ ，但请注意该技术也可应用于不依赖于x的情况qφ(z)。完全变分贝叶斯方法用于推断参数的后验概率在附录中给出。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们介绍**下界**的一个实用估计器及其对参数的导数。我们假设**近似后验**形式为 $q_{φ}(z|x)$ ，但请注意该技术也可应用于不依赖于x的情况 $q_{φ}(z)$ 。完全变分贝叶斯方法用于推断参数的后验概率在附录中给出。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在选择了一个近似后验分布 $q_{φ}(z|x)$ 并满足第2.4节中概述的某些温和条件的情况下，我们可以使用一个可微分的变换 $g_{φ}(ε, x)$ 对随机变量 $\widetilde z ∼ q_{φ}(z|x)$ 进行**重参数化**，其中ε是一个（辅助的）噪声变量。<br>
+
+![formula4](images/vae-formula4.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;请参考第2.4节，了解选择适当分布p(ε)和函数 $g_{φ}(ε, x)$ 的一般策略。现在，我们可以通过下述方式形成关于 $q_{φ}(z|x)$ 的一些函数f(z)期望的蒙特卡洛估计: <br>
+
+![formula5](images/vae-formula5.png)
+
+
+
 
 
 
