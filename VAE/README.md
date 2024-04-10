@@ -57,7 +57,7 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们希望针对变分参数 φ 和生成参数 θ 对下界 L(θ, φ; x(i)) 进行求导和优化。然而，关于 φ 的下界梯度存在一些问题。对于这种类型的问题，通常（朴素地）使用蒙特卡洛梯度估计器，其形式为：<br>
 
-![formula11](images/vae-formula11.png)
+![formula11](images/vae-formula-a1.png)
 
 此处， $z(l) ∼ q_{φ}(z|x(i))$ 。这个梯度估计器表现出非常高的方差（参见例如[BJP12]），并且对于我们的目的来说是**不实用的**。<br>
 
@@ -74,7 +74,7 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们将这个技术应用于变分下界（方程（2）），得到了我们的通用随机梯度变分贝叶斯（SGVB）估计器。<br>
 
-![formula12](images/vae-formula12.png)
+![formula12](images/vae-formula-a2.png)
 
 ![formula6](images/vae-formula6.png)
 
@@ -97,21 +97,58 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种重参数化对我们的情况非常有用，因为它可以用来重写关于 $q_{φ}(z|x)$ 的期望，从而使得关于φ的蒙特卡洛估计的期望是**可微的**。根据确定性映射 $z = g_{φ}(ε, x)$ ，我们知道 $q_{φ}(z|x)dz = p(ε)dε$ 。因此，可以得到以下结果： $∫ q_{φ}(z|x) f(z) dz = ∫ p(ε) f(z) dε = ∫ p(ε) f(g_{φ}(ε, x)) dε$ 。由此可以得出，可以构建一个可微的估计器：<br>
 
-![formula13](images/vae-formula13.png)
+![formula13](images/vae-formula-a3.png)
 
 其中 $ε^{l} ∼ p(ε)$ 。在第2.3节中，我们应用了这个技巧来获得**变分下界的可微估计器**。<br>
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;以单变量高斯分布为例：假设 z ∼ p(z|x) = N(µ, σ²)。在这种情况下，一个有效的重参数化是 z = µ + σε，其中 ε 是一个辅助噪声变量，ε ∼ N(0, 1)。因此：
 
-![formula14](images/vae-formula14.png)
+![formula14](images/vae-formula-a4.png)
 
 此处: $ε^l ∼ N (0, 1)$ .<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们可以选择哪种 $q_{φ}(z|x)$ 使得我们能够选择一个可微分的转换函数 $g_{φ}(.)$ 和辅助变量 $ε ∼ p(ε)$ 有三种基本方法：<br>
 
+1. 可处理的逆累积分布函数（inverse CDF）。在这种情况下，令 $ε ∼ U(0, I)$（表示均匀分布），并且令 $g_{φ}(ε, x)$ 为 $q_{φ}(z|x)$ 的**逆累积分布函数**。例如：指数分布、柯西分布、逻辑斯蒂分布、瑞利分布、帕累托分布、威布尔分布、倒数分布、冈波兹分布和Erlang分布等。<br>
+*(注释：给定一个概率值p，逆累积分布函数返回一个对应的随机变量X的取值，使得X小于或等于该值的概率正好为p。即 p --> X）* <br>
 
+2. 类似于高斯分布的例子，对于任何 "location-scale" 分布族，我们可以选择标准分布（location = 0, scale = 1）作为辅助变量 ε，并令 $g(.) = location + scale · ε$ 。例如：拉普拉斯分布、椭圆分布、学生t分布、逻辑斯蒂分布、均匀分布、三角形分布和高斯分布。<br>
 
+3. 组合方法：通常可以将随机变量表示为辅助变量的不同变换。例如：对数正态分布（正态分布变量的指数化）、伽马分布（指数分布变量之和）、Dirichlet分布（伽马变量的加权和）、贝塔分布、卡方分布和F分布等。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当这三种方法都无法使用时，存在一些较好的逆累积分布函数的近似方法，其计算时间复杂度与概率密度函数（PDF）相当（例如，可以参考[Dev86]中的一些方法）。<br>
 
+# 3 例子：变分自编码器
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们将给出一个例子，其中我们**使用神经网络作为概率编码器** $q_{φ}(z|x)$（生成模型 $p_{θ}(x, z)$ 的 **后验的近似**），并且参数φ和θ与AEVB算法**一起进行联合优化**。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;假设潜在变量(latent variables)的**先验分布**是以0为中心的各向同性**多元高斯分布** $p_{θ}(z) = N(z; 0, I)$ 。注意，在这种情况下，先验分布**没有参数**。我们假设 $p_{θ}(x|z)$ 是一个多元高斯分布（对于实值数据）或伯努利分布（对于二进制数据），其分布参数通过一个多层感知机（MLP，一个具有单隐藏层的全连接神经网络，请参见附录C）从**z计算得到**。请注意，**真实的后验分布** $p_{θ}(z|x)$ 在这种情况下是难以处理的。虽然关于 $q_{φ}(z|x)$ 的形式有很大的自由度，但我们**假设**真实的（但是难以处理的）**后验分布具有近似高斯形式**，并且具有近似**对角协方差**。在这种情况下，我们可以**假设变分近似后验分布为具有对角协方差结构的多元高斯分布(简化而不是限制)**： <br>
+
+![formula9](images/vae-formula9.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在这里，近似后验分布的均值和标准差，即µ(i)和σ(i)，是encoder MLP的输出，即数据点x(i)和变分参数φ的非线性函数（请参见附录C）。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;正如在第2.4节中解释的那样，我们从后验分布中采样 $z^{(i,l)} ∼ q_{φ}(z|x^{(i)})$ ，其中 $z^{(i,l)} = g_{φ}(x^i, ε^l) = µ^i + σ^i ⊙ ε^l$ ，其中 $ε^l ∼ N(0, I)$ ，⊙表示逐元素乘法。在这个模型中，**先验分布** $p_{θ}(z)$ 和 **后验分布** $q_{φ}(z|x)$ 都是高斯分布；在这种情况下，我们可以使用等式（7）中的估计量，其中KL散度可以计算和求导，而无需估计（请参见附录B）。对于该模型和数据点x(i)，得到的估计量如下所示：<br>
+
+![formula10](images/vae-formula10.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如上所述，并且在附录C中解释，解码项 $log p_{θ}(x(i)|z(i,l))$ 是一个伯努利或高斯的MLP，具体取决于我们建模的数据类型。<br>
+
+# 附录C. 作为概率编码器和解码器的多层感知机（MLP）
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在变分自编码器中，**神经网络被用作概率编码器和解码器**。根据数据和模型的类型，有许多可能的编码器和解码器选择。在我们的例子中，我们使用了相对简单的神经网络，即多层感知机（MLPs）。对于**编码器**，我们使用了具有**高斯输出的MLP**，而对于**解码器**，我们使用了具有**高斯或伯努利输出的MLPs**，具体取决于数据类型。<br>
+
+## C.1 作为decoder的伯努利MLP
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在这种情况下，假设 $p_{θ}(x|z)$ 是一个多元伯努利分布，其概率通过一个具有单隐藏层的全连接神经网络从z计算得到。<br>
+
+![formula11](images/vae-formula11.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这里，$f_{σ}(.)$ 是逐元素的sigmoid激活函数，而 $θ = {W1, W2, b1, b2}$是MLP的权重和偏置。<br>
+
+## C.2 作为编码器或解码器的高斯MLP
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在这种情况下，编码器或解码器是一个具有对角协方差结构的多元高斯分布。
+
+![formula12](images/vae-formula12.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这里，{W3, W4, W5, b3, b4, b5}是MLP的权重和偏置，在作为解码器时是θ的一部分。需要注意的是，当这个网络**用作编码器(可以是编码器也可以是解码器)** $q_{φ}(z|x)$ 时，z和x被互换，并且权重和偏置成为变分参数φ。<br>
 
 
 
