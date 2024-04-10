@@ -1,4 +1,4 @@
-# 变分自编码器(Auto-Encoding Variational Bayes)
+# 自动编码变分贝叶斯(Auto-Encoding Variational Bayes)
 
 - [论文链接](https://arxiv.org/pdf/1312.6114.pdf)
 
