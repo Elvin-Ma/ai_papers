@@ -27,6 +27,10 @@
 
 ![figure2](images/switch-transformer-figure2.png)
 
+## 2.1 简化稀疏路由
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;专家混合路由。Shazeer等人（2017）提出了一种自然语言的专家混合（MoE）层，它将一个标记表示x(token representation)作为输入，然后将其路由到从N个专家 $\left \{  E_{i}(x) \right \}^{N}_{i=1}$ 中选择的前k个确定最佳的专家。路由变量 $W_{r}$ 生成逻辑向量 $h(x) = W_{r} · x$ ，通过对该层可用的N个专家进行softmax分布进行归一化。第i个专家的门值由以下公式给出:<br>
+
+ 
 
 
 
