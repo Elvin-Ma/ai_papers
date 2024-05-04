@@ -77,9 +77,31 @@
 ## 2.4 改进的训练和微调技术
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;与普通的Transformer相比，稀疏专家模型可能会引入训练困难。这是因为在这些层次上的**硬切换（路由）决策可能导致不稳定性**。此外，像bfloat16（Wang和Kanwar，2019）这样的低精度格式可能会加剧我们的路由器中softmax计算的问题。我们在这里描述训练困难和我们使用的方法，以克服这些问题，实现稳定且可扩展的训练。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;针对大型稀疏模型的选择性精度(selective precision)。**模型不稳定性妨碍了使用高效的bfloat16精度进行训练的能力**，因此Lepikhin等人（[2020](https://arxiv.org/pdf/2006.16668)）在他们的MoE Transformer中始终使用float32精度进行训练。然而，我们表明通过**在模型的局部部分选择性地转换为float32精度**，可以实现稳定性，而无需承担float32张量昂贵的通信成本。这种技术与现代混合精度训练策略相一致，其中模型的某些部分和梯度更新以更高的精度进行，正如Micikevicius等人（2017）所示。表2显示，我们的方法在几乎与bfloat16训练相等的速度下，提供了float32的训练稳定性。<br>
 
+![table2](images/switch-transformer-table2.png)
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了实现这一点，我们将路由器的输入转换为float32精度。路由器函数接受令牌作为输入，并生成用于选择和重新组合专家计算的调度和合并张量（有关详细信息，请参阅附录中的代码块15）。重要的是，float32精度仅在路由器函数的主体内部使用，即在与该设备相关的计算中。因为最终的调度和合并张量在函数结束时重新转换为bfloat16精度，所以没有昂贵的float32张量通过 all-to-all communication 操作广播，但我们仍然受益于float32的增强稳定性。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了保持稳定性，我们**对参数进行较小的初始化**。适当的初始化对于深度学习的成功训练至关重要，我们特别观察到这一点对于Switch Transformer来说尤为重要。我们通过从截断正态分布中抽取元素来初始化权重矩阵，其中均值µ=0，标准差 $σ= \sqrt (\frac{s}{n})$ ，其中s是一个缩放超参数，n是权重张量中的输入单元数（例如，fan-in）。
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;作为对不稳定性的额外纠正措施，我们建议将默认的Transformer初始化**缩放因子s=1.0减小10倍**。这既提高了质量，又减少了训练不稳定的可能性。表3衡量了模型质量的提升和训练早期方差的减少。我们发现，通过Neg. Log Perp.测量的平均模型质量显著提高，并且运行结果的方差大大降低。此外，**这种初始化方案在跨越几个数量级的模型上广泛有效**。我们使用相同的方法稳定地训练小到我们的基线223M参数模型，以及超过一万亿参数的巨大模型。<br>
+
+![table3](images/switch-transformer-table3.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对大型稀疏模型进行正则化(regularizing)。我们的论文考虑了常见的自然语言处理方法，即在大型语料库上进行预训练，然后在较小的下游任务（如摘要或问题回答）上进行微调。一个自然而然的问题是过拟合，**因为许多微调任务只有很少的示例**。在标准Transformer的微调过程中，Raffel等人（2019）在每个层次上使用dropout（Srivastava等人，2014）来防止过拟合。我们的Switch Transformer具有比FLOP匹配的稠密基准模型更多的参数，这**可能导致在这些较小的下游任务中更严重的过拟合现象**。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;因此，在微调过程中，我们提出了一种简单的方法来缓解这个问题：增加专家内的dropout，我们将其称为专家dropout。在微调过程中，我们只需在每个专家层的中间前馈计算中显著增加dropout rate。表4显示了我们的专家dropout协议的结果。我们观察到，**简单地在所有层级增加dropout会导致性能下降**。然而，在非专家层设置较小的dropout率（0.1），而在专家层设置较大的dropout率（0.4），可以改善四个较小的下游任务的性能。<br>
+
+![table3](images/switch-transformer-table3.png)
+
+# 3 缩放性质(scaling Properties)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们对Switch Transformer架构在预训练期间的缩放性质进行了研究。根据Kaplan等人（2020）的研究，我们考虑了一个模型既不受计算预算限制，也不受数据量限制的情况。为了避免数据瓶颈，我们使用了包含超过1800亿target token 的大型C4语料库（Raffel等人，2019），并训练直到出现递减的收益。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;专家的数量是扩展我们模型最有效的维度。增加专家的数量可以使计算成本近似保持不变，因为模型每个令牌只选择一个专家，而不管可供选择的专家数量如何。然而，路由器必须计算一个概率分布，涵盖更多的专家，但这只是一个轻量级的计算，成本为O(dmodel × num experts)，其中dmodel是在层之间传递的 embedding dimension 维度。在本节中，我们考虑在固定的计算预算下，基于步骤(step-basis)和基于时间(time-basis)的缩放性质。<br>
+
+## 3.1 基于步骤的缩放结果
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;图4展示了在训练所有模型进行**固定步骤数量时**，随着专家数量的增加而产生的一致的扩展优势。我们观察到一个明显的趋势：**在保持每个token的FLOPS固定的情况下，拥有更多参数（专家）可以加快训练速度**。左图展示了稀疏模型参数和测试损失之间的一致的缩放性质（在每个令牌的FLOPS固定的情况下）。这揭示了沿着稀疏模型参数的这个额外维度进行扩展的优势。右图衡量了一个稠密模型变体和四个FLOP匹配的稀疏变体的样本效率。我们发现**增加专家的数量会导致更具样本效率的模型**。我们的Switch-Base 64专家模型在第60,000步和第450,000步时达到了与T5-Base模型相同的性能，步骤时间(step time)上提速了7.5倍。此外，与Kaplan等人（2020）的研究结果一致，我们发现较大的模型也更具样本效率，即对于观察到的token数量固定，学习速度更快。<br>
 
 
 
