@@ -93,7 +93,7 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;因此，在微调过程中，我们提出了一种简单的方法来缓解这个问题：增加专家内的dropout，我们将其称为专家dropout。在微调过程中，我们只需在每个专家层的中间前馈计算中显著增加dropout rate。表4显示了我们的专家dropout协议的结果。我们观察到，**简单地在所有层级增加dropout会导致性能下降**。然而，在非专家层设置较小的dropout率（0.1），而在专家层设置较大的dropout率（0.4），可以改善四个较小的下游任务的性能。<br>
 
-![table3](images/switch-transformer-table3.png)
+![table4](images/switch-transformer-table4.png)
 
 # 3 缩放性质(scaling Properties)
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们对Switch Transformer架构在预训练期间的缩放性质进行了研究。根据Kaplan等人（2020）的研究，我们考虑了一个模型既不受计算预算限制，也不受数据量限制的情况。为了避免数据瓶颈，我们使用了包含超过1800亿target token 的大型C4语料库（Raffel等人，2019），并训练直到出现递减的收益。<br>
@@ -119,9 +119,36 @@
 # 4 下游结果
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;第3节展示了在**预训练阶段具有出色的缩放性能**，但我们现在验证这些优势是否能够转化为在下游任务中改进的语言学习能力。我们首先对各种不同的自然语言处理任务进行**微调**。接下来，我们研究通过将稀疏模型蒸馏为小型且易于部署的稠密基线，将内存占用降低了90%以上。最后，在多任务、多语言环境中衡量改进效果，我们展示了Switch Transformer在多任务学习中的强大能力，相比于多语言T5-Base模型，在101种语言中都有所改进。<br>
 
+## 4.1 微调
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**用于微调的基准模型和Switch模型**。我们的基准模型是经过高度调优的223M参数T5-Base模型和739M参数的T5-Large模型（Raffel等人，2019）。对于这两个版本，我们设计了一个在FLOP上匹配的Switch Transformer，参数更多，具体情况请参阅表9。我们的基准模型与Raffel等人（2019）的基准模型略有不同，因为我们在改进的C4语料库上进行预训练，该语料库去除了示例内文本的重复，从而提高了作为预训练任务的效果（Lee等人，2021）。根据我们的协议，我们每个批次使用220（1,048,576）个token进行预训练，共进行550k个step，总共使用了576B个tokens。然后，我们使用batch size为1M进行微调，进行16k个 step，并对每个任务进行评估，每200个step报告一次在验证集上的最佳性能。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于所有层，我们使用0.1的丢弃率，除了Switch层，其丢弃率为0.4（参见表4）。对于每个任务，我们在微调过程中每200个step评估一次模型质量，并报告在验证集上计算得到的性能峰值。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**微调任务和数据集**。我们选择了一些探索语言能力的任务，包括问答、摘要和对世界知识的理解。语言基准测试集GLUE（Wang等人，2018）和SuperGLUE（Wang等人，2019）被处理为复合混合任务，其中每个任务的混合比例与其中包含的令牌数量成比例。这些基准测试集包括需要进行情感分析（SST2）、词义消歧（WIC）、句子相似度（MRPC、STS-B、QQP）、自然语言推理（MNLI、QNLI、RTE、CB）、问答（MultiRC、RECORD、BoolQ）、共指消解（WNLI、WSC）、句子完成（COPA）和句子可接受性（CoLA）的任务。我们使用CNNDM（Hermann等人，2015）和BBC XSum（Narayan等人，2018）数据集来衡量对文章进行摘要的能力。问答任务使用了SQuAD数据集（Rajpurkar等人，2016）和ARC推理挑战数据集（Clark等人，2018）。与Roberts等人（2020）的方法类似，我们通过在三个闭卷问答数据集上进行微调来评估模型的知识水平：自然问题（Kwiatkowski等人，2019）、网络问题（Berant等人，2013）和Trivia QA（Joshi等人，2017）。闭卷表示问题没有附加的参考或上下文材料。为了评估模型的常识推理能力，我们在Winogrande模式挑战数据集上进行评估（Sakaguchi等人，2020）。最后，我们在对抗性自然语言推理基准测试集（Nie等人，2019）上测试模型的自然语言推理能力。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**微调评估指标**。本文中使用以下评估指标：我们报告GLUE和SuperGLUE所有子任务的平均分数。在CNNDM和XSum中使用Rouge-2指标。在SQuAD和闭卷任务（Web、Natural和Trivia Questions）中，我们报告与目标完全匹配的答案的百分比（有关详细信息和此度量的不足，请参考Roberts等人（2020）的论文）。最后，在ARC Easy、ARC Challenge、ANLI和Winogrande中，我们报告生成的响应的准确性。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**微调结果**。我们观察到在许多自然语言任务中存在显著的下游改进。显著的改进来自SuperGLUE，其中我们发现与T5-Base和T5-Large基准相比，与FLOP匹配的Switch变体分别提高了**4.4个百分点和2个百分点**，同时在Winogrande、闭卷Trivia QA和XSum中也有很大的改进。在我们的微调研究中，唯一观察不到改进的任务是AI2推理挑战（ARC）数据集，其中T5-Base在挑战数据集上表现优于Switch-Base，T5-Large在简单数据集上表现优于Switch-Large。总体而言，我们观察到在推理和知识密集型任务中都存在显著改进。这证实了我们的架构不仅在预训练阶段表现良好，而且**可以通过微调将质量改进转化为下游任务**。<br>
 
+![table5](images/switch-transformer-table5.png)
 
+## 4.2 蒸馏
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;部署拥有数十亿或数万亿参数的大规模神经网络是不方便的。为了缓解这个问题，我们研究**将大型稀疏模型蒸馏为小型稠密模型**（Hinton等人，2015）。未来的工作还可以研究将大型模型蒸馏为更小的稀疏模型。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**蒸馏技术**。在表6中，我们研究了各种蒸馏技术。这些技术是基于Sanh等人（2019）的研究构建的，他们研究了用于BERT模型的蒸馏方法。我们发现，使用非专家权重初始化稠密模型可以带来适度的改进。这是可能的，因为所有模型的FLOP匹配，所以非专家层的尺寸是相同的。由于在Transformer中，专家层通常只在每个或每隔一个FFN层添加，这允许许多权重使用训练好的参数进行初始化。此外，我们观察到使用教师概率的0.25和ground truth label的0.75的混合进行蒸馏可以改进结果。通过结合这两种技术，我们**保留了较大稀疏模型的约30%的质量提升，而参数数量仅为其1/20左右**。质量提升指的是Switch-Base（教师）和T5-Base（学生）之间的质量差异的百分比。因此，100%的质量提升意味着学生的性能与教师相同。<br>
 
+![table6](images/switch-transformer-table6.png)
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**可实现的压缩(compression)比率(rates)**。使用表6中描述的最佳蒸馏技术，我们将各种稀疏模型蒸馏为稠密模型。我们对Switch-Base版本进行了蒸馏，扫描了不断增加的专家数量，对应于1.1B到14.7B参数之间的变化。通过蒸馏，我们可以在压缩82%的同时保留1.1B参数模型质量提升的37%。在极端情况下，当我们将模型压缩99%时，仍然能够保持28%的教师模型质量改进。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**蒸馏微调模型**。我们通过研究将微调的稀疏模型蒸馏为稠密模型来总结。表8展示了将在SuperGLUE任务上微调的7.4B参数Switch-Base模型蒸馏为223M T5-Base模型的结果。与我们的预训练结果类似，我们发现当蒸馏为FLOP匹配的稠密变体时，我们能够保留稀疏模型30%的提升效果。一个潜在的未来方向，目前未考虑，可能是研究用于微调任务的特定专家，并提取它们以实现更好的模型压缩效果。<br>
+
+## 4.3 多语言学习
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在我们最后一组下游实验中，我们在**101种不同语言的混合数据上进行预训练**，以评估模型质量和速度之间的权衡。我们基于最近的mT5工作（Xue等人，2020）构建和进行基准测试，mT5是T5的多语言扩展。我们在跨越101种语言的通用爬网数据集（mC4）的多语言变体上进行预训练，这些语言是mT5中引入的，但由于某些语言内的不同脚本变体，混合数据包含107个任务。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在图7中，我们绘制了FLOP匹配的Switch模型（mSwitch-Base）与T5基准模型（mT5-Base）之间的所有语言的负对数困惑度质量改进情况。在将两个版本都进行了100万步的预训练后，我们发现在考虑的所有101种语言中，Switch Transformer相对于基准模型都增加了最终的负对数困惑度。在图8中，我们呈现了另一种视角，将使用Switch Transformer相对于mT5-Base的每步速度提升进行了直方图分析。我们发现相对于mT5-Base，Switch Transformer的平均加速比为5倍，并且91%的语言至少实现了4倍的加速。这表明Switch Transformer在多任务和多语言学习方面是有效的。<br>
+
+![table7](images/switch-transformer-table7.png)
+
+![table8](images/switch-transformer-table8.png)
+
+# 5 使用数据、模型和专家并行设计模型
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;任意增加专家数量会遭遇收益递减的问题（图4）。在这里，我们描述了**互补的扩展策略**。扩展Transformer的常见方式是同时增加维度，比如 $d_{model}$ 或 $d_{ff}$ 。这既增加了参数和计算量，最终受限于每个加速器的内存。一旦超过了加速器内存的大小，就可以使用单程序多数据（SPMD）模型并行性。本节研究了数据、模型和专家并行结合的权衡。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;回顾前馈网络（FFN）层。我们使用FFN层作为展示Mesh TensorFlow（Shazeer等人，2018）中数据、模型和专家并行性如何工作的示例，并在这里进行简要回顾。我们假设批处理中有B个标记，每个标记的维度为 $d_{model}$ 。FFN的输入（x）和输出（y）的大小均为[B, $d_{model}$ ]，中间层（h）的大小为[B, $d_{ff}$ ]，其中 $d_{ff}$ 通常比 $d_{model}$ 大几倍。在FFN中，中间层计算为 $h = xW_{in}$ ，然后层的输出为 $y = ReLU(h)W_{out}$ 。因此， $W_{in}$ 和 $W_{out}$ 独立地应用于每个token，并具有大小为[ $d_{model}$ , $d_{ff}$ ]和[ $d_{ff}$, $d_{model}$ ]。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们描述了分区的两个方面：权重和数据批次在核心上的划分，如图9所示。我们将所有可用的核心表示为N，Mesh TensorFlow可以将其重新映射为逻辑多维处理器网格。在这里，我们创建了一个二维逻辑网格，其中一个维度表示**数据并行分片的方式（n）**，另一个维度表示**模型并行分片的方式（m）**。总核心数必须等于在数据并行和模型并行上进行分片的方式，例如 **N = n × m**。为了在核心之间进行分片，**包含B个标记的张量将在n个数据并行核心之间进行分片**，因此**每个核心包含B/n个 tokens**。然后，具有 $d_{ff}$ 的张量和变量在m个模型并行核心之间进行分片。对于具有专家层的变体，我们考虑E个专家，每个专家可以处理多达C个标记。<br>
 
