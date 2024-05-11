@@ -63,7 +63,7 @@
 
 ![table2](images/gpipe-table2.jpg)
 
-*(表格2：加速倍数与参数的关系表格，使用不同分区数量K和不同micro-batch数量M的GPipe在TPU上的归一化训练吞吐量。随着更多的micro-batch，性能提高。当M ≥ K时，Transformer模型的加速比几乎与加速器数量呈线性关系。如果需要，批次大小会进行调整以适应内存。)*
+*(表格2：加速倍数与参数的关系表格，使用不同分区数量K和不同micro-batch数量M的GPipe在TPU上的归一化训练吞吐量。随着更多的micro-batch，性能提高。当M >> K时，Transformer模型的加速比几乎与加速器数量呈线性关系。如果需要，批次大小会进行调整以适应内存。)*
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了衡量GPipe的通信开销影响，我们在一台具有多个NVIDIA P100 GPU但没有NVLink的主机上运行了实验。跨GPU的数据传输必须通过PCI-E进行相对较慢的设备到主机和主机到设备传输。micro-batch数量M固定为32。如表3所示，当我们将分区数量从2增加到8时，我们观察到AmoebaNet-D（18, 128）的加速比为2.7倍。对于24层Transformer，加速比为3.3倍。与我们在配备高速互连的TPU上观察到的类似，存在类似的线性加速。由于GPipe仅在分区边界传输激活张量，设备之间的通信带宽不再成为模型并行性的瓶颈。<br>
 
