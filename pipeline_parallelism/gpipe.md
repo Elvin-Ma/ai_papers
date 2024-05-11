@@ -45,7 +45,7 @@
 ## 2.3 性能优化
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了减少激活内存需求，GPipe支持重新计算(re-materialization)[14]。在前向计算过程中，每个加速器只在分区边界处存储输出激活。在反向传播过程中，第k个加速器重新计算复合前向函数 $F_{k}$ 。因此，峰值激活内存需求降低到 $O(N + \frac{L}{K} \times \frac{N}{M})$ ，其中 $\frac{N}{M}$ 是micro-batch的大小， $\frac{L}{K}$ 是每个分区的层数。相比之下，如果不进行重新计算和分区，内存需求将为 $O(N \times L)$ ，因为计算梯度 $b_{i}$ 需要上一层的梯度 $b_{i+1}$ 和缓存的激活 $f_{i}(x)$ 。 <br>
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如图2c所示，分区会引入一些加速器的空闲时间，我们称之为冒泡开销(bubble overhead)。这个冒泡时间在微步数M(mini-batch 被分割为M个 mocro-batch)上的平摊是 $O(\frac{K-1}{M + K -1}$ 。在我们的实验中，当 M ≥ 4 × K (K 个 加速器)时，我们发现冒泡开销可以忽略不计。部分原因是因为在反向传播过程中，重新计算可以提前调度，而无需等待较早层的梯度。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如图2c所示，分区会引入一些加速器的空闲时间，我们称之为冒泡开销(bubble overhead)。这个冒泡时间在微步数M(mini-batch 被分割为M个 mocro-batch)上的平摊是 $O(\frac{K-1}{M + K -1})$ 。在我们的实验中，当 M ≥ 4 × K (K 个 加速器)时，我们发现冒泡开销可以忽略不计。部分原因是因为在反向传播过程中，重新计算可以提前调度，而无需等待较早层的梯度。<br>
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于在加速器之间**只需要在分区边界传递激活张量**，所以GPipe引入了低通信开销。因此，即使在没有高速互连的加速器上，我们也可以实现高效的扩展性能。<br>
 
