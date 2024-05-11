@@ -27,7 +27,12 @@
 ## 2.1 接口
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;任何深度神经网络都可以定义为L层的序列。每一层 $L_{i}$ 由一个前向计算函数 $f_{i}$ 和相应的参数集 $w_{i}$ 组成。GPipe还允许用户指定一个可选的计算成本估计函数 $c_{i}$ 。给定分区数K，L层的序列可以被分割成K个复合层，或称为cell。令 $p_{k}$ 包含层i和j之间的连续层。与 $p_{k}$ 对应的参数集等于 $w_{i} 、w_{i+1}、 \dots、w_{j}$ 的并集，它的前向函数为 $F_{k}=f_{j} \circ \ldots \circ f_{i+1} \circ f_{i}$ 。相应的反向传播函数 $B_{k}$ 可以通过自动符号微分从 $F_{k}$ 中计算得到。成本估计器 $C_{k}$ 被设置为 $\Sigma_{l=i}^{j} c_{l}$ 。<br>
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GPipe接口非常简单和直观，用户只需要指定以下内容：(i) 模型分区的数量K，(ii) micro-batch(micro-batch)的数量M，以及 (iii) 定义模型的L层序列和定义。请参考补充材料中的示例。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GPipe接口非常简单和直观，用户只需要指定以下内容：
+1. 模型分区的数量K;
+2. micro-batch(micro-batch)的数量M，
+3. 定义模型的L层序列和定义。
+   
+请参考补充材料中的示例。<br>
 
 ## 2.2 算法
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;用户一旦根据模型参数 $w_{i}$ 、前向计算函数 $f_{i}$ 和成本估计函数 $c_{i}$ 定义了网络中的层序列，GPipe将网络分割为K个cell，并将第k个cell放置在第k个加速器上。通信原语(Communication primitives)会**自动**插入到分区边界，以允许相邻分区之间的数据传输(data transfer)。分区算法通过最小化所有cell的估计成本的方差(minimizes the variance)，以便通过在所有分区之间**同步计算时间**来最大化流水线的效率。<br>
