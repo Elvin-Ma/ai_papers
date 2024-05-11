@@ -30,9 +30,7 @@
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;GPipe接口非常简单和直观，用户只需要指定以下内容：
 1. 模型分区的数量K;
 2. micro-batch(micro-batch)的数量M，
-3. 定义模型的L层序列和定义。
-   
-请参考补充材料中的示例。<br>
+3. 模型的L层序列的定义请参考补充材料中的示例。<br>
 
 ## 2.2 算法
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;用户一旦根据模型参数 $w_{i}$ 、前向计算函数 $f_{i}$ 和成本估计函数 $c_{i}$ 定义了网络中的层序列，GPipe将网络分割为K个cell，并将第k个cell放置在第k个加速器上。通信原语(Communication primitives)会**自动**插入到分区边界，以允许相邻分区之间的数据传输(data transfer)。分区算法通过最小化所有cell的估计成本的方差(minimizes the variance)，以便通过在所有分区之间**同步计算时间**来最大化流水线的效率。<br>
