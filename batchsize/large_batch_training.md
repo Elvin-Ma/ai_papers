@@ -40,6 +40,31 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;直观地说，从第一个阶段（其中增加批处理大小几乎可以实现**完全线性加速**）到第二个阶段（其中增加批处理大小主要浪费计算资源）的**转变**大致应发生在**梯度的噪声和信号之间达到平衡的地方**——即**梯度的方差与梯度本身的尺度相当的地方**。将这种启发式观察形式化，可以得到梯度噪声尺度。<br>
 
+![figure1](images/large-batch-training-figure1.png)
+
+*(图1：在将模型训练到一定性能水平的过程中，时间和计算资源的权衡关系形成了帕累托前沿（左图）。训练时间和计算成本分别主要由优化步骤的数量和处理的训练样本数量确定。我们可以以更多计算资源的代价更快地训练模型。右图显示了通过将模型训练到不同性能水平来获得的Atari Breakout游戏的帕累托前沿的具体示例。成本和训练时间取决于计算架构，并且仅显示近似值。)*
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种情况在图1中以图示方式展示。对于给定的模型，我们希望在**尽可能短的墙时间（wall time）（x轴）内进行训练**，同时**尽可能少地使用总计算量（y轴）——这是并行化的通常目标**。改变批量大小将使我们在这两者之间沿着一条权衡曲线移动。**最初，我们可以增加批量大小而不会显著增加总计算量，然后在某个“转折点”处，两者之间存在实质性的权衡，最后，当批量大小很大时，我们无法在训练时间上再获得进一步的收益**。在下面的概念和实验结果中，我们对这些概念进行了形式化(formalize)，并展示了曲线的弯曲（因此近似的最大有效批量大小）实际上大致由**噪声尺度**确定。<br>
+
+## 2.2 gradients、batches 和梯度噪声尺度(Gradient Noise Scale)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们现在将对第2.1节中描述的直觉进行形式化。考虑一个由变量 $θ ∈ R^{D}$ 参数化的模型，其性能由损失函数L(θ)评估。损失函数是通过对数据点x上的分布ρ(x)进行平均得到的。每个数据点x都有一个相关的损失函数 $L_{x}(θ)$ ，而完整的损失由 $L(θ) = E_{x∼ρ}[Lx(θ)]$ 给出。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们希望使用类似SGD的优化器来最小化L(θ)，因此相关的量是梯度G(θ) = ∇L(θ)。然而，直接优化L(θ)可能是低效的，甚至不可能，因为它需要在每一次优化步骤中处理**整个数据分布**。相反，我们通过对来自ρ的**一组样本进行平均来获得梯度的估计(estimate)**，这组样本称为批次(batch)：<br>
+
+![formula1](images/large-batch-training-formula1.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这个近似(estimate)形成了随机(stochastic)优化方法（如小批量(mini-batch)随机梯度下降（SGD）和Adam [KB14]）的基础。梯度现在是一个随机变量，其期望值（在随机批次上取平均）由真实梯度给出。其方差与批次大小B的倒数成比例：<br>
+
+![formula2](images/large-batch-training-formula2.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;其中每个示例的协方差矩阵定义为：<br>
+
+![formula3](images/large-batch-training-formula3.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;关键点在于小批量梯度(mini-batch gradients)提供了真实梯度的噪声估计(estimate)，而**较大的batch提供了更高质量的估计**。我们对梯度在优化目的(purpose)中的有用性随着B的变化感兴趣，以及如何通过这一点来指导我们选择一个好的B。我们可以通过将梯度中的噪声与我们可以从单个梯度更新中期望的**真实损失的最大改善**联系起来来实现这一点。首先，设G表示真实梯度，H表示参数值θ处的真实Hessian。如果我们通过某个向量V扰动参数θ，使其变为 $θ - \epsilon V，其中 $\epsilon$ 是步长，我们可以将该新点处的真实损失在 $\epsilon$ 的二次阶展开：
+
+![formula4](images/large-batch-training-formula4.png)
+
 
 
 ## 2.6 总结
