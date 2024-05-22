@@ -61,11 +61,64 @@
 
 ![formula3](images/large-batch-training-formula3.png)
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;关键点在于小批量梯度(mini-batch gradients)提供了真实梯度的噪声估计(estimate)，而**较大的batch提供了更高质量的估计**。我们对梯度在优化目的(purpose)中的有用性随着B的变化感兴趣，以及如何通过这一点来指导我们选择一个好的B。我们可以通过将梯度中的噪声与我们可以从单个梯度更新中期望的**真实损失的最大改善**联系起来来实现这一点。首先，设G表示真实梯度，H表示参数值θ处的真实Hessian。如果我们通过某个向量V扰动参数θ，使其变为 $θ - \epsilon V，其中 $\epsilon$ 是步长，我们可以将该新点处的真实损失在 $\epsilon$ 的二次阶展开：
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;关键点在于小批量梯度(mini-batch gradients)提供了真实梯度的噪声估计(estimate)，而**较大的batch提供了更高质量的估计**。我们对梯度在优化目的(purpose)中的有用性随着B的变化感兴趣，以及如何通过这一点来指导我们选择一个好的B。我们可以通过将梯度中的噪声与我们可以从单个梯度更新中期望的**真实损失的最大改善**联系起来来实现这一点。首先，设**G表示真实梯度，H表示参数值θ处的真实Hessian矩阵**。如果我们通过某个**向量V扰动参数θ**，使其变为 $θ - \epsilon V$ ，其中 $\epsilon$ 是步长，我们可以将该新点处的真实损失在 $\epsilon$ 的二次阶展开：<br>
 
 ![formula4](images/large-batch-training-formula4.png)
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如果我们可以访问无噪声的真实梯度G并用它来扰动参数，那么当V = G时，方程2.4将通过设定 $\epsilon = \epsilon_{max} = \frac{|G|^{2}}{G^{T}HG} $ 来最小化. 然而，在现实中，我们只能访问由大小为B的批次**估计**得到的**带噪声的梯度G_{est}**，因此我们能做的最好的是将期望 $E[L(θ − εG_{est})]$ 相对于ε最小化。可以使用方程2.2来评估这个期望值。<br>
 
+**使得近似泰勒级数下降最多的最优步长为 $\epsilon = \frac{g^Tg}{g^THg}$ ,最坏情况下 g 与 H 最大特征值 $λ_{max}$ 对应的特征向量对齐，则最优步长是 $\frac{1}{λ_{max}}$ , 当我们要最小化的函数能用二次函数很好地近似的情况下，Hessian矩阵的特征值决定了学习率的量级** <br>
+
+![formula5](images/large-batch-training-formula5.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;相对于ε最小化这个方程得到：<br>
+
+![formula6](images/large-batch-training-formula6.png)
+
+作为最优步长，这将产生从带噪声的梯度中获得的最佳损失改善：<br>
+
+![formula7](images/large-batch-training-formula7.png)
+
+如上所述，我们将噪声尺度定义为：
+
+![formula8](images/large-batch-training-formula8.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;请注意，我们对噪声尺度的定义**与完整训练集的大小无关**。如果我们使用的步长大于两倍的 $ε_{opt}$ ，损失可能会增加，导致发散，如图3所示。<br>
+
+![figure3](images/large-batch-training-figure3.png)
+
+*(图3：较大的批次大小平均产生更接近真实梯度的估计梯度。当估计梯度接近真实梯度时，可以使用较大的步长，以便每步可以取得更多进展。左图：在小批次大小下使用较大步长可能导致不稳定，如二次损失所示。右图：方程2.6预测，在噪声尺度B之后，较大的批次大小变得不那么有帮助，训练速度降至最大可能速度的50%。）* <br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;尽管上述推导中存在许多无根据的假设，但我们将发现方程2.7和2.8对大批量训练的行为提供了有益的指导，即使使用其他优化器（包括动量法、Adam和RMSProp）也是如此。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;关于噪声尺度与学习率的依赖关系的讨论，请参阅附录C中关于训练的“temperature”的部分。<br>
+
+**推论和简化**
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;方程2.7暗示着当Batch远小于噪声尺度时，即 $B << B_{noise}$ 时，分母中的第二项占主导(denominator)地位，因此增加批次大小B线性增加了损失的进展。这是**小批次的阶段**，其中Batch size的增加**线性加速了训练**。相比之下，当 $B >= B_{noise}$ 时，第一项占主导地位，因此增加B几乎对损失的进展没有影响。这是大batch的阶段，增加批次大小不会加速训练，**只会浪费计算资源**；两者之间的切换发生在 $B ≈ B_{noise}$ 处（参见图3）。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于存在Hessian矩阵H，在方程2.8中计算噪声尺度需要一些额外的计算开销。我们可以通过在各种批次大小B下进行一系列线性搜索，测量 
+ $∆L_{opt}(B)$ ，并将结果拟合到方程2.7中来估计它。这使我们能够估计 $B_{noise}$ ，并通过实证测试验证方程2.7是否真正适用于数据（我们在第3节中对这些局部测试进行了更详细的讨论）。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; 如果我们做一个（不现实的）假设，即优化问题具有完美的条件（即**Hessian矩阵是单位矩阵的倍数**），情况会变得更简单。如果是这种情况，那么方程2.8可以简化为：<br>
+
+![formula9](images/large-batch-training-formula9.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这个公式表明**噪声尺度等于各个梯度分量方差的总和，除以梯度的全局范数**。实质上，**它衡量了梯度与其方差相比的大小**。它也是估计梯度和真实梯度在L2空间中变得接近的尺度（具有非平凡的点积）的度量方式。预期的归一化L2距离由以下公式给出：<br>
+
+![formula10](images/large-batch-training-formula10.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;实际上，我们发现 $B_{simple}$ 和 $B_{noise}$ **通常只相差一个小的乘法常数因子**，尤其是当我们采用常见的训练方案改善条件时。在我们的实证工作中，有时我们会计算 $B_{noise}$ ，但主要计算 $B_{simple}$ ，因为它需要较少的计算开销。在附录A.1中，我们提供了一种极其简单的方法，在数据并行训练的情况下，几乎没有额外的开销来测量这个简化的噪声尺度(公式如下)。<br>
+
+![formula-a-1-2](images/large-batch-training-formula-a-1-2.png)
+
+## 2.3 数据/时间效率权衡的预测结果
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;到目前为止，我们的分析仅涉及损失函数空间中的一个点。但在第3节中，我们将展示方程2.7非常准确地预测了**训练速度与批次大小的依赖关系**，即使是对于在损失函数空间中涵盖许多点的完整训练运行。通过对方程2.7在多个优化步骤中进行平均（请参见附录D），我们找到了**训练速度和数据效率**之间的简单关系：<br>
+
+![formula11](images/large-batch-training-formula11.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在这里，S和 $S_{min}$ 分别表示达到特定性能水平所需的实际步骤数和最小可能步骤数，E和 $E_{min}$ 分别表示达到相同性能水平所需的实际处理的训练样例数和最小可能训练样例数。由于我们使用固定的batch size进行训练，我们有 $E_{tot} = B*S_{tot}$ 。我们通过对上述方程进行经验拟合来定义临界批次大小，如下所示：<br>
+
+![formula12](images/large-batch-training-formula12.png)
 
 ## 2.6 总结
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;总结起来，我们的模型对于大批量训练提出了以下预测：<br>
