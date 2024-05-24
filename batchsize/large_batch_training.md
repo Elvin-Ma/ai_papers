@@ -173,6 +173,8 @@
 
 ![formula12](images/large-batch-training-formula12.png)
 
+
+
 ## 2.6 总结
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;总结起来，我们的模型对于大批量训练提出了以下预测：<br>
 - 神经网络训练的**速度和效率**之间的权衡由批处理大小控制，并遵循2.11式的形式。<br>
