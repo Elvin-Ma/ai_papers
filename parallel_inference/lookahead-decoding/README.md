@@ -55,6 +55,37 @@
 ## 3.4. lookahead parallel
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;LOOKAHEAD DECODING在多个GPU上容易实现lookahead和验证分支的并行化。lookahead的并行化是根据lookahead计算是由几个不相交分支组成这一点来实现的。例如，在图2（b）中，具有绿色1和红色2标记的分支与具有绿色3和红色4标记的分支没有交互。我们可以将这些不相交的分支放在不同的GPU上，而在推断计算过程中不引入通信。验证分支的并行化是通过将多个n-gram候选项分配给不同的设备来完成的(多个三角阵互不干涉)。由于**每个候选项的验证在设计上是相互独立的**，这不会引起通信。<br>
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;图3展示了将图2（b）中的前瞻分支和验证分支并行化到四个GPU的示例。这种工作负载分配将导致橙色标记0、1、2、3和输入标记0被冗余地放置和计算。然而，在整个前向传播过程中，这实质上可以节省通信量。我们只需要在前向传播后在每个设备上同步生成的标记。我们可以通过多个GPU增加的FLOPs进一步扩展W、N和G，以根据LOOKAHEAD DECODING的可扩展性（§4）获得更低的延迟。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;图3展示了将图2（b）中的lookahead branch和 verification 并行化到四个GPU的示例。这种工作负载分配将导致橙色标记0、1、2、3和输入标记0被冗余地放置和计算。然而，在整个前向传播过程中，这实质上可以节省通信量。我们只需要在前向传播后在每个设备上同步生成的token。我们可以通过多个GPU增加的FLOPs进一步扩展W、N和G，以根据LOOKAHEAD DECODING的可扩展性（§4）获得更低的延迟。<br>
+
 ![figure3](images/figure3.png)
+*将图2（b）中的lookahead branch 和 verification branch的工作负载分配到4个GPU上，利用前瞻并行性，在前向传播过程中避免通信*<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们将这种新的并行性称为前瞻并行性（Lookahead Parallel，LP）。与以往的并行方法（包括流水线和张量并行）不同，这些方法在不同的GPU上分片模型参数或状态，LP为每个GPU维护整个模型的副本（因此需要更多内存），并允许将标记分配到不同的GPU上。因此，在推断过程中，LP具有优势，因为它在每一步引入几乎零通信，而现有的模型并行方法（Narayanan等，2021年；Shoeybi等，2019年）在每个解码步骤的关键路径上涉及大量通信开销。<br>
+
+# 4 LOOKAHEAD DECODING的扩展规律
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于LOOKAHEAD DECODING引入了与每个并行解码步骤成本相关的灵活参数W和N。本节研究计算FLOPs与理论加速比之间的扩展规律，并将其与推测性解码进行比较。<br>
+
+## 4.1. 推测性解码
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;推测性解码(Speculative decoding)使用draft model来猜测每一步的一个标记序列。我们用β（接受率）表示序列中每个标记通过LLM验证的概率，并标记其期望为E(β) = α。如果我们使用draft model每步猜测γ个标记，被接受的token数量的期望值表示为（Leviathan等，2023年）：<br>
+
+![formula4](images/formula4.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;不再每次猜测一个序列，而是猜测b个序列。我们假设采样了b个序列，每个序列有γ个标记，每个标记的接受率都是β。在这种设置下，被接受的标记数量的期望值表示如下：<br>
+
+![formula5](images/formula5.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;请查看附录C中对方程4和方程5的推导。请注意，当b = 1时，方程5会回退到方程4. <br>
+
+## 4.2. 估算LOOKAHEAD DECODING的加速比
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们定义S = 步骤压缩比，即自回归步数除以LOOKAHEAD DECODING步数，以生成相同长度的序列。由于生成的标记数等于自回归步数，可以表示为：<br>
+
+![formula6](images/formula6.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;LOOKAHEAD DECODING每次像方程5那样猜测b个序列。在每一步中，我们将在池中从当前输入标记开始搜索n-gram，并且最多有G个长度为N-1的猜测。由于我们设置G = W（§3.2），我们有G = W = b和N-1 = γ，使用方程5中的符号。在实践中，我们不能期望每一步都有同样好的猜测（即，接受率为E(β) = α）。我们假设，平均而言，对于每个f步，我们有一个好的猜测，接受E(#tokens)个标记，而对于其他f-1步，由于糟糕的猜测，我们回退到自回归解码。我们使用这个f来连接S和每步的E(#tokens)如下：<br>
+
+![formula7](images/formula7.png)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们可以使用我们的公式和特定设置绘制曲线，就像图4（b）中所示。我们发现我们的经验实验趋势（LLaMA-2-Chat-7B在MT-Bench上，G = W如图4（a）中所示）在一定程度上与公式吻合。从这个公式中，我们得出结论，根据足够大的γ，我们可以按每步log(b)线性减少解码步骤的数量。与推测性解码相比，LOOKAHEAD DECODING不会在同时增加γ和b的情况下达到方程4中指示的上限。这揭示了LOOKAHEAD DECODING的扩展规律，根据每步log(FLOPs)线性减少解码步骤，给定足够大的N，因为每步的FLOPs大致与输入标记数成正比（即，(W + G) * (N - 1)）。这种扩展规律还表明LOOKAHEAD DECODING对多个GPU的强扩展性，在这种情况下，通过使用更多的FLOPs，我们可以获得更大的每标记延迟降低，这对于延迟敏感的任务是有利的。<br>
+
+![figure4](images/figure4.png)
 
