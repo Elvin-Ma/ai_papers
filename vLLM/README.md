@@ -128,12 +128,35 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们观察到，即使使用模型并行执行，每个模型分片仍然处理相同的输入令牌集，因此需要相同位置的KV缓存。因此，vLLM在中央调度器中具有一个单一的KV缓存管理器，如图4所示。不同的GPU工作器共享该管理器，以及从逻辑块到物理块的映射。这种共享映射允许GPU工作器使用调度器为每个输入请求提供的物理块来执行模型。尽管每个GPU工作器具有相同的物理块ID，但每个工作器**仅为其对应的注意力头存储部分KV缓存**。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在每一步中，调度器首先为批处理中的每个请求准备包含输入令牌ID和每个请求的block-table的控制消息。接下来，调度器将这个控制消息广播给GPU worker。然后，GPU工作器开始使用输入令牌ID执行模型。在注意力层中，GPU工作器根据控制消息中的block-table读取KV缓存。在执行过程中，GPU工作器使用allreduce通信原语同步中间结果，无需调度器的协调，就像[47]中所述。最后，GPU工作器将本次迭代的抽样token发送回调度器。总而言之，GPU woker无需在内存管理上进行同步，因为它们只需要在每个解码迭代的开始时接收所有的内存管理信息以及步骤输入。<br>
+
+# 5 实现(Implementation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;vLLM是一个端到端的服务系统，具有一个基于FastAPI [15]的前端和基于GPU的推理引擎。前端扩展了OpenAI API [34]接口，允许用户为每个请求自定义抽样参数，例如最大序列长度和波束宽度 𝑘。vLLM引擎由8.5K行Python代码和2K行C++/CUDA代码编写而成。我们在Python中开发了与控制相关的组件，包括调度器和块管理器，同时为关键操作（如PagedAttention）开发了自定义CUDA核。对于模型执行器，我们使用PyTorch [39]和Transformers [58]实现了流行的LLM模型，如GPT [5]、OPT [62]和LLaMA [52]。我们在分布式GPU工作器之间使用NCCL [32]进行张量通信。<br>
+
+## 5.1 kernel 级优化
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于PagedAttention引入了现有系统不支持的内存访问模式，我们为其开发了几个GPU内核进行优化。 
+1. **fused reshape and block write**。在每个Transformer层中，新的KV缓存被分割成块，reshape为 针对块读取进行优化的内存布局，然后保存在block-table指定的位置。为了最小kernel launch开销，我们将它们融合成一个单一的kernel;
+2. **Fusing block read and attention**。我们改编了FasterTransformer [31]中的attention kernel，根据block-table读取KV缓存，并实时执行注意力操作。为确保合并内存访问，我们分配一个GPU线程束来读取每个块。此外，我们为请求批次内的**可变序列长度**增加了支持;
+3. 融合块复制。通过**写时复制机制**发出的块复制操作可能在不连续的块上操作。如果使用cudaMemcpyAsync API，这可能导致大量小数据移动的调用。为了减少开销，我们实现了一个kernel，将不同块的复制操作批量处理成单个内核启动。<br>
+
+## 5.2 支持各种解码算法
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;vLLM使用三种关键方法实现各种解码算法：fork、append和free。fork方法从现有序列创建一个新序列。append方法向序列追加一个新令牌。最后，free方法删除序列。例如，在并行抽样(parallel sampling)中，vLLM使用fork方法从单个输入序列创建多个输出序列。然后，它在每次迭代中向这些序列添加新令牌，使用append，并使用free删除满足停止条件的序列。vLLM还在beam search和prefix sharing中应用相同策略。我们相信未来的解码算法也可以通过结合这些方法来支持。<br>
 
 
+# 7  消融研究(Ablation Studies)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们对vLLM的各个方面进行研究，并通过消融实验评估我们所做的设计选择。<br>
 
+## 7.1 内核微基准测试
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PagedAttention中的**动态块映射(dynamic block mapping)** 影响涉及存储的KV缓存的GPU操作性能，即块读/写和注意力操作。与现有系统相比，我们的GPU kernel（§5）涉及访问block-table、执行额外分支和处理可变序列长度的额外开销。如图18a所示，与高度优化的FasterTransformer实现相比，这导致注意力kernel lantency增加了20-26%。我们认为这种额外开销很小，因为它只影响注意力操作符，而不影响模型中的其他操作符，如Linear。尽管存在额外开销，PagedAttention使得vLLM在端到端性能上明显优于FasterTransformer（§6）。
 
+## 7.2 块大小的影响
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**Block size的选择对vLLM的性能有重大影响**。如果块大小过小，vLLM可能无法充分利用GPU的并行性来读取和处理KV cache。如果块大小过大，内部碎片增加，共享的概率降低。<br>
 
+## 7.3 比较重计算和交换(swap)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;vLLM支持重计算和交换作为其恢复机制。为了了解这两种方法之间的权衡，我们评估它们的端到端性能并对它们的**额外开销**进行微基准测试，如图19所示。我们的结果显示，**swapping在小块大小下产生过多的开销**。这是因为小块大小通常导致CPU和GPU之间大量小数据传输，从而限制了有效的PCIe带宽。相比之下，重计算的开销在不同块大小下保持恒定，因为重计算不使用KV块。因此，**当块大小较小时，重计算更有效率，而当块大小较大时，swapping更有效率**，尽管重计算的开销永远不会高于交换的延迟的20%。对于**从16到64的中等块大小，这两种方法表现出可比较的端到端性能**。<br>
+![figure18](images/figure18.png)
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在图18b中，我们使用ShareGPT和Alpaca跟踪数据，在固定请求速率下评估了不同块大小下vLLM的性能，使用基本抽样。在ShareGPT跟踪数据中，Block size从16到128导致最佳性能。在Alpaca跟踪数据中，尽管块大小16和32效果良好，但较大的块大小显著降低了性能，因为序列变短于块大小。在实践中，我们发现块大小16足够大，可以有效利用GPU，并且足够小，以避免在大多数工作负载中出现显著的内部碎片。因此，**vLLM将其默认块大小设置为16**。<br>
 
 # 5 参考链接
 - [csdn blog](https://blog.csdn.net/yjw123456/article/details/141090361)
