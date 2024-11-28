@@ -72,4 +72,64 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于张量并行（TP）和序列并行（SP）之间的协同关系，TorchTitan原生地将这两者结合在一起，并且它们共同由TP度数设置来控制。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当计算损失函数时，模型的输出通常非常大。由于来自TP（Transformer Parallel，即变换器并行）/SP（Sequence Parallel，即序列并行）的模型输出在（通常很大的）词汇表维度上是分片（sharded）的，直接计算交叉熵损失需要沿着TP维度收集所有的分片来使输出被复制，这会导致大量的内存使用。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通过损失并行（Loss Parallel）技术，交叉熵损失可以高效地计算，而无需将所有模型输出分片聚集到每一个单独的GPU上。这不仅显著降低了内存消耗，还通过减少通信开销和并行进行分片计算来提高了训练速度。鉴于这些改进，TorchTitan默认实现了损失并行。<br>
+
+### 2.1.4 流水线并行
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了在最大规模上进行预训练，TorchTitan提供了流水线并行性，这种并行性由于具有最轻的通信开销和利用了点对点（P2P）通信，因此变得至关重要(essential)。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;流水线并行（PP）将模型视为一系列 operations，将这些oprations（以及它们所使用的参数）分割成S个阶段(stage)，这些stage在不同的设备组上运行。在典型情况下，一个stage代表一个单独的模型层或N个相邻模型层的组合，但理论上它甚至可以是一个部分层。在前向传播过程中，一个stage接收输入激活（第0阶段除外），执行本地计算，并发送输出激活（第S-1阶段除外）。最后一个阶段执行损失计算，并开始反向传播，以相反的顺序通过流水线发送梯度。为了提高效率，输入批次被拆分成微批次(micro batch)，并且流水线调度使一个微批次(microbatches)的计算与其他微批次(microbatches)的通信重叠进行。TorchTitan支持多种流水线调度方式，这些调度方式在之前的工作中已有描述（Narayanan等人，2019；Huang等人，2019；Narayanan等人，2021；Qi等人，2023）。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;训练循环还必须考虑流水线stages的创建，并执行流水线调度，而不是直接调用(invoking) model.forward()。由于调度是按微批次(microbatch)计算损失的，因此必须为流水线并行（PP）更新损失计算和任何日志记录代码。在TorchTitan中，我们建议使用一个共享的loss_fn，以便流水线和非流水线代码路径都可以使用，从而最大程度地减少训练循环中的差异。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;与数据并行性的交互(Interactions)，例如确保**数据并行reduction仅在调度中的最后一个微批次之后才发生**，以及在使用Zero-3时调度分片（shard）和合并（unshard）操作，也在流水线调度执行器内部透明地处理，从而简化了TorchTitan中的训练器实现。有关其在TorchTitan中的使用，请参阅附录B.4。<br>
+
+## 2.2 优化训练效率
+
+### 2.2.1 使用激活检查点技术平衡计算与内存
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;激活检查点（Activation Checkpointing，AC）（Chen等，2016）和选择性激活检查点（Selective Activation Checkpointing，SAC）（Korthikanti等，2023）是标准的训练技术，它们通过在反向传播过程中重新计算激活来节省内存，从而降低GPU内存使用的峰值。即使在应用了多维并行性之后，这些技术也通常是必需的。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TorchTitan提供了灵活的激活检查点（**AC**）和选择性激活检查点（**SAC**）选项，利用torch.utils.checkpoint在TransformerBlock级别上应用。AC策略包括“完全”AC、op-level的SAC和layer-level的SAC。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在TransformerBlock内部，完全AC通过重新计算反向传播过程中所需的所有激活张量来工作，而op-level的SAC则保存计算密集型PyTorch op的结果，并仅重新计算其他op。 layer-level级别的SAC与完全AC的工作方式相似，但包装应用于每个x个TransformerBlock（其中x由用户指定），以实现内存和重新计算之间的可配置权衡。（详细信息见附录B.5。）<br>
+
+### 2.2.2 利用torch.compile优化的区域编译
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PyTorch 2（[Ansel等，2024](https://dl.acm.org/doi/pdf/10.1145/3620665.3640366)）发布了torch.compile，其中TorchDynamo作为前端，用于将PyTorch操作提取到FX图中，而TorchInductor则作为后端，用于将FX图编译成融合的Triton代码，以提高性能。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在TorchTitan中，我们使用了区域编译技术(regional compilation)，该技术将torch.compile应用于Transformer模型中的每个单独的TransformerBlock。这带来了两个主要好处：<br>
+1. 我们为每个区域获得了一个完整的图（没有图中断），这与FSDP2和TP（以及更广泛的torch.Tensor子类，如DTensor）以及其他PyTorch分布式训练技术兼容；<br>
+2. 由于Llama模型将相同的TransformerBlock层一个接一个地堆叠起来，torch.compile能够识别出正在重复编译的相同结构，并且只编译一次，从而大大减少了编译时间。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;torch.compile 通过计算融合和计算-通信重新排序，在不影响模型特性的情况下，以简单的用户界面带来了吞吐量和内存方面的效率提升（见第3.2节）。下面我们将进一步阐述 torch.compile 的可组合性如何帮助 TorchTitan 通过集成异步TP（Tensor Parallelism）和Float8等高级功能，以简单的用户界面解锁硬件优化的性能增益。<br>
+
+### 2.2.3 异步张量并行以最大程度地重叠通信
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;默认情况下，张量并行（Tensor Parallelism, TP）在分片计算之前/之后会产生阻塞通信，导致计算资源无法得到有效利用。异步张量并行（Asynchronous Tensor Parallel, AsyncTP）（Wang等，2022）通过将注意力（attention）和前馈（feed-forward）模块中的TP矩阵乘法**分割成更小的块**，并在每个部分之间重叠通信集体操作，实现了计算与通信的重叠。这种重叠是通过**微流水线优化实现的**，即在计算矩阵乘法的其他块的同时，正在通信结果。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PyTorch的AsyncTP基于SymmetricMemory抽象，它通过在每个GPU上分配**共享内存缓冲区**以提供直接的P2P访问，从而创建了更快的通信集体操作（Wang等人，2024）。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通过TorchTitan对torch.compile的集成，可以轻松地在TorchTitan中配置AsyncTP，以在新硬件（H100或更新的、节点内带有NVSwitch的GPU）上实现有意义的端到端加速（详见第3.2节）。使用详情请参阅附录B.6。<br>
+
+### 2.2.4 通过混合精度训练和Float8支持提升吞吐量
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;混合精度训练（Micikevicius等人，2018）既能节省内存又能节省计算资源，同时确保训练的稳定性。FSDP2（Fully Sharded Data Parallel 2，完全分片数据并行2）内置了对基于基本torch.dtype的混合精度训练的支持。这涵盖了在低精度（例如torch.bfloat16）下执行FSDP全聚集（all-gather）和计算，以及在高精度（例如torch.float32）下执行无损FSDP归约散射（reduce-scatter，即梯度）以获得更好的数值结果的常见用法。有关使用详情，请参阅附录B.7。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TorchTitan还支持在新硬件（如H100）上使用**Float8（一种派生数据类型）进行更高级的混合精度训练**，并能带来显著的性能提升（详见第3.2节）。torchao.float8中的Float8功能支持多种每张量缩放策略，包括动态、延迟和静态策略（详见Micikevicius等人（2022年）；Vasiliy Kuznetsov（2024年），第4.3节），同时可与PyTorch原生的其他关键系统（如autograd、torch.compile、FSDP2和TP（具有Float8全聚集能力（Feng等人，2024年）））组合使用。<br>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
