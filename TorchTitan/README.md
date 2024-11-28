@@ -117,6 +117,67 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TorchTitan还支持在新硬件（如H100）上使用**Float8（一种派生数据类型）进行更高级的混合精度训练**，并能带来显著的性能提升（详见第3.2节）。torchao.float8中的Float8功能支持多种每张量缩放策略，包括动态、延迟和静态策略（详见Micikevicius等人（2022年）；Vasiliy Kuznetsov（2024年），第4.3节），同时可与PyTorch原生的其他关键系统（如autograd、torch.compile、FSDP2和TP（具有Float8全聚集能力（Feng等人，2024年）））组合使用。<br>
 
+## 2.3 生产就绪训练(Production ready training)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了实现生产级的训练，TorchTitan提供了开箱即用(out of the box)的关键功能无缝集成。这些功能包括：<br>
+1. 使用PyTorch分布式检查点（Distributed Checkpointing，DCP）进行高效检查点设置;
+2. 以及, 通过与Flight Recorder的集成来调试卡住或崩溃的作业。
+
+### 2.3.1 可扩展且高效的分布式检查点技术
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在训练大型语言模型时，检查点至关重要，原因有两点：它们便于在推理和评估等应用中重复使用模型，同时为故障情况提供了恢复机制。一个优化的检查点工作流程应确保**在不同并行性下易于重复使用，同时保持高性能而不减慢训练速度**。存在两种典型的检查点方法:<br>
+1. 第一种方法将状态（模型参数和优化器状态）聚合(gather)为一个未分片版本，该版本与并行性无关，从而便于重复使用，但需要高昂的通信成本。<br>
+2. 第二种方法则是**让每个训练器保存其本地分片状态**，这虽然加快了进程，但由于嵌入了并行性信息，使得重复使用变得复杂。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**DCP（分布式检查点技术）利用DTensor解决了这些挑战**，DTensor能够**独立于并行性封装全局和局部张量信息**。DCP将这些信息转换为内部格式进行存储。在加载时，DCP将存储的分片与当前基于DTensor的模型参数和优化器状态进行匹配，并从存储中获取所需的分片。TorchTitan充分利用了PyTorch的所有原生并行性，并有效地使用DCP来平衡效率和可用性。此外，DCP通过**异步检查点技术提高了效率**，它在单独的线程中处理存储持久性，使这一操作能够与后续(subsequent)的训练iterations重叠进行。对于Llama 3.1 8B模型，TorchTitan利用DCP的异步检查点技术，相比同步分布式检查点技术，将检查点开销降低了5-15倍([Zhang et al., 2024](https://pytorch.org/blog/performant-distributed-checkpointing/); [Huang et al., 2024](https://discuss.pytorch.org/t/distributed-w-torchtitan-optimizing-checkpointing-efficiency-with-pytorch-dcp/211250))。<br>
+
+### 2.3.2 Flight Recorder(飞行记录器)用于调试job crashes
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在开发并行代码或进行大规模运行时，一个常见的故障模式是观察到NCCL collective操作超时，随后需要找出根本原因。由于通信kernels通常从CPU的角度来看是异步的，因此当某个操作超时时，很难准确确定(pinpoint)是哪个操作失败以及失败的具体原因。为了解决这个难题(dilemma)，PyTorch为NCCL collective操作提供了一个Flight Recorder工具。该工具记录了每个collective或点对点（p2p）操作的开始和结束时间（在GPU上）以及排队时间（在CPU上）。此外，它还记录了元数据，如使用了哪个进程组、源节点（以及对于p2p操作的目的节点）、张量大小和堆栈跟踪。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们发现Flight Recorder中包含的数据有助于调试由并行代码中的错误引起的collective operation挂起和点对点（p2p）operation挂起问题。在并行处理（PP）中，可能存在由于缺少或send/receive操作顺序不当而导致的调度错误，从而引hang。基于Flight Recorder数据的分析可以精确指出在GPU上已完成的最新发送或接收操作。对于全分片数据并行（FSDP）或张量并行（TP），可以确定是否有一个或多个节点没有调用collective operation，这可能是由于PP调度中的错误或TP中的逻辑故障导致的。<br>
+
+# 3 实验(experimentation)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们通过实验展示了使用TorchTitan进行弹性分布式训练的有效性。实验对象包括Llama 3.1的8B、70B和405B模型，分别应用了从1D并行到3D并行的技术，并且实验规模从8个GPU扩展到512个GPU。我们还分享了通过TorchTitan实验获得的知识和经验。关于我们如何应用（最多）3D并行的代码库详细步骤，请参见附录A。<br>
+
+## 3.1 实验设置
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;实验在配备95 GiB内存的NVIDIA H100 GPU上进行，**每个主机装有8个GPU和NVSwitch。两个主机组成一个机架，连接到TOR交换机。TOR交换机之间通过后端RDMA网络相连。** 在TorchTitan中，我们集成了可检查点的数据加载器，并为C4数据集（一个变体）提供了内置支持，该数据集是Common Crawl网络爬虫语料库的一个庞大且经过清理的版本（Raffel等人，2020）。本节中的所有实验均使用了相同的数据集。对于分词器，我们使用了与Llama 3.1一起发布的官方分词器（tiktoken）。<br>
+
+## 3.2 性能
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了展示TorchTitan的弹性和可扩展性，我们在广泛的GPU规模（从8个到512个）上进行了实验，同时随着底层模型规模（8B、70B和405B）的增加，我们变化了并行维度的数量（分别为1D、2D和3D）。为了证明第2.2节中引入的优化技术的有效性，我们展示了在适当的基准上添加每种单独技术时训练吞吐量如何提高。特别地，当使用新功能在更高维度的并行性上进行训练时，基准总是更新为包含所有之前的技术。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在我们整个实验过程中，我们注意到内存读数在整个训练过程中保持稳定，而吞吐量数字（每秒每个GPU处理的标记数）则是每10次迭代计算并记录一次，并且总是在（任意确定的）第90次迭代时读取。我们没有报告**模型浮点运算利用率（MFU）**（[Chowdhery等人，2023]()），因为在TorchTitan中启用Float8时，BFLOAT16张量核心和FP8张量核心都会参与模型训练，但它们具有不同的峰值浮点运算数，并且在这种场景下MFU的定义并不明确。我们注意到，在没有启用Float8的情况下，在8个或128个H100 GPU上对Llama 3.1 8B模型进行1D训练的MFU达到了33%至42%。<br>
+
+![table1](images/table1.png)
+
+![table2](images/table2.png)
+
+![table3](images/table3.png)
+
+![table4](images/table4.png)
+
+## 3.3 使用TorchTitan 3D并行性的扩展
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于模型规模日益增大以及数据量庞大，大型语言模型（LLM）的扩展规律带来了挑战，这需要在大量GPU上应用并行策略。TorchTitan提供了组合不同并行性的能力，以有效地将模型训练扩展到数千个GPU。本节讨论了在大规模训练LLM时应用TorchTitan 3D并行性的观察和动机。请注意，可能存在许多3D并行性的组合，但本文仅选择讨论其中一种组合，其可以概括为以下图示：<br>
+
+![figure2](images/figure2.png)
+
+## 3.3.1 使用FSDP进行扩展
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP（ZeRO）是一种通用技术，可以应用于任何模型架构，因此**它是作为第一或唯一并行度的良好选择**。只要FSDP的通信速度快于相应的计算速度（对于在多达数百个，比如512个GPU上训练的大型语言模型来说，情况确实如此），并且没有必要将（有效的）每个GPU的批处理大小降低到1以下（原因将在下面的TP部分提及），那么1D FSDP就应该是足够的。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;现有的ring-based的NCCL collective operation(如allgather、reduce-scatter)会产生延迟开销，这种**开销在大规模（例如512个GPU）时变得尤为严重**。随着集群规模线性增加，collective operation的延迟也会线性增加，导致FSDP的collective operation无法再被计算所隐藏，因此仅使用FSDP的效率会降低。为了进一步扩大规模，需要考虑结合模型并行性解决方案，如TP（张量并行性）和PP（管道并行性）。<br>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
