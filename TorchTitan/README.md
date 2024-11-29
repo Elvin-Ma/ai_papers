@@ -158,39 +158,40 @@
 
 ![figure2](images/figure2.png)
 
-## 3.3.1 使用FSDP进行扩展
+## 3.3.1 使用FSDP进行扩展(scaling)
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP（ZeRO）是一种通用技术，可以应用于任何模型架构，因此**它是作为第一或唯一并行度的良好选择**。只要FSDP的通信速度快于相应的计算速度（对于在多达数百个，比如512个GPU上训练的大型语言模型来说，情况确实如此），并且没有必要将（有效的）每个GPU的批处理大小降低到1以下（原因将在下面的TP部分提及），那么1D FSDP就应该是足够的。<br>
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;现有的ring-based的NCCL collective operation(如allgather、reduce-scatter)会产生延迟开销，这种**开销在大规模（例如512个GPU）时变得尤为严重**。随着集群规模线性增加，collective operation的延迟也会线性增加，导致FSDP的collective operation无法再被计算所隐藏，因此仅使用FSDP的效率会降低。为了进一步扩大规模，需要考虑结合模型并行性解决方案，如TP（张量并行性）和PP（管道并行性）。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;现有的ring-based的NCCL collective operation(如allgather、reduce-scatter)会产生延迟开销，这种**开销在大规模（例如512个GPU）时变得尤为严重**。随着集群规模线性增加，collective operation的延迟也会线性增加，导致FSDP的collective operation无法再被计算所隐藏，因此仅使用FSDP的效率会降低。为了进一步扩大规模，**需要考虑结合模型并行性解决方案**，如TP（张量并行性）和PP（管道并行性）。<br>
 
+## 3.3.2 二维并行性：将张量并行（TP）与完全分片数据并行（FSDP）结合应用
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;模型并行性（张量并行TP和管道并行PP）可以帮助避免单独扩展完全分片数据并行（FSDP）时所面临的**集体通信延迟增加的问题**。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;当local batch size设置为1时，张量并行（TP）可以进一步降低有效本地批处理大小(最低降至 $\frac{1}{TP degree}$ ), 因为**在多个GPU上张量分片的模型会协同处理同一个批次**。这对于**降低峰值内存使用量至关重要**，使得训练能够在GPU内存中完成（例如，由于模型规模庞大或序列长度较长），或者对于在固定所需全局批处理大小的情况下进行强扩展（例如，出于训练效率考虑）也是至关重要的。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;此外，张量并行（TP）执行特征维度分片(embedding 那个维度)。这可以带来更优化的矩阵乘法形状，从而提高浮点运算（FLOP）的利用率。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于张量并行（TP）引入了额外的阻塞集体通信(blocking collectives)，在实际应用中，TP通常仅应用于具有快速互连（如NVLink）的**节点内部**。异步张量并行（AsyncTP）可以通过**完全重叠通信来提高性能**，但不易扩展到多节点，因此**张量并行的度数通常限制为8**。这意味着，如果要扩展到超大数量的GPU(例如超过4192个GPU)，我们需要结合管道并行(PP)来实现三维并行性。<br>
 
+### 3.3.3 三维并行性：将管道并行（PP）与二维并行性结合应用
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;与其他模型并行性相比，管道并行（PP）仅需在stage之间以点对点(P2P)的方式传输激活和梯度，因此所需的通信带宽更少。这在以下两种情况下尤其有用：（1）当FSDP（完全分片数据并行）的world size再次变大，以至于FSDP+TP(张量并行)仍然暴露出FSDP的集体通信时，可以进一步降低FSDP的通信延迟；（2）**在使用带宽受限的集群进行训练时**。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们注意到，PP的性能，特别是"bubble"大小, 可能会因所使用的管道调度和microbatch size而有所不同，这是在假定全局批处理大小和world size固定的情况下。<br>
 
+# 4 适应性和可扩展性展示
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们通过强调正在进行的工作和外部贡献来展示TorchTitan的适应性和可扩展性，这些工作和贡献展示了其无缝集成和比较新技术、优化方法和模型的能力。<br>
 
+## 4.1 正在进行的工作：四维并行性和零气泡管道调度
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TorchTitan的模块化和可扩展架构使得新技术和优化方法能够无缝集成。例如，正在进行的工作包括整合上下文并行（Context Parallel）([Liu等，2023](https://arxiv.org/pdf/2310.01889)；[Liu和Abbeel，2024](https://arxiv.org/pdf/2310.01889)；[NVIDIA，2023](https://docs.nvidia.com/megatron-core/developer-guide/latest/api-guide/context_parallel.html))以实现四维并行性，并利用torch.distributed.pipelining包来支持零气泡调度（[Qi等，2023](https://arxiv.org/pdf/2401.10241)）。这展示了TorchTitan适应不断发展的机器学习领域的能力。<br>
 
+## 4.2 外部贡献：构建和评估自定义创新
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TorchTitan的灵活架构还使用户能够轻松集成和compare新的创新。通过提供一个模块化和高效的测试平台，TorchTitan使用户能够快速评估新技术、优化方法和硬件在训练性能上的表现。这已经引导了一个新的生产级数据加载器的完善、一个新的ZeRO实现的改进、一个基于Adam的优化器的advancements，以及一个顶级扩散模型的训练。<br>
 
+# 5 相关工作
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;随着大型语言模型（LLMs）（[The Llama3 Herd of Models : Dubey等，2024](https://arxiv.org/pdf/2407.21783)；[GPT4 technical report : Achiam等，2023](https://arxiv.org/pdf/2303.08774)）的重要性日益增长，业界和研究界都在密切关注如何改进用于训练各种规模LLMs的基础设施(infrastructure)。鉴于这些模型本身的庞大规模，分布式训练支持变得不可或缺。像Megatron（Narayanan等，2021）、DeepSpeed（Rasley等，2020）和PyTorch分布式（PyTorch原生）（Paszke等，2019；Meta Platforms, Inc.，2024a）这样的库提供了构建分布式训练工作流的API。基于Megatron-LM构建的NVIDIA NeMo（NVIDIA Corporation，2024）为从数据整理到模型部署的复杂端到端模型生命周期提供了一个打包解决方案。而像torchtune（Meta Platforms, Inc.，2024b）这样的PyTorch原生解决方案则专注于在简化工作流中对LLMs进行微调。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TorchTitan与这些解决方案的不同之处在于，它专注于使用PyTorch原生API进行生产级的预训练。该库设计时考虑了弹性组合性，以适应预训练LLMs所需规模，同时最小化外部依赖。这降低了理解和扩展预训练的门槛，同时提供了如异步分布式检查点等功能，用于构建端到端的生产工作流。<br>
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# 6 结论
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TorchTitan是一个强大且灵活的大型语言模型（LLM）训练框架。它提供了组合性，允许用户结合使用各种并行技术（如FSDP、TP和PP）、内存优化方法（如Float8和激活检查点），以及与torch.compile的集成，以优化训练效率。TorchTitan高度灵活，能够适应不断发展的模型架构和硬件进步，并采用模块化设计，配备多轴指标，促进(foster)创新和实验。此外，TorchTitan还优先考虑了可解释性(interpretability)、生产级训练和PyTorch原生功能。它还提供了高性能训练，具有弹性可扩展性、全面的(comprehensive)训练配方(recipes)和指南，以及关于选择和结合分布式训练技术的专家指导。如实验部分所示，与优化的基线相比，TorchTitan在128个GPU规模下（Llama 3.1 8B）使用1D并行性提供了65.08%的训练加速，在256个GPU规模下（Llama 3.1 70B）使用2D并行性额外提供了12.59%的加速，在512个GPU规模下（Llama 3.1 405B）使用3D并行性再额外提供了30%的加速。凭借其强大的功能和高效性，TorchTitan是应对具有挑战性的LLM训练任务的理想一站式解决方案。<br>
 
