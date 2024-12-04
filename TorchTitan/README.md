@@ -196,3 +196,28 @@
 # 6 结论
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TorchTitan是一个强大且灵活的大型语言模型（LLM）训练框架。它提供了组合性，允许用户结合使用各种并行技术（如FSDP、TP和PP）、内存优化方法（如Float8和激活检查点），以及与torch.compile的集成，以优化训练效率。TorchTitan高度灵活，能够适应不断发展的模型架构和硬件进步，并采用模块化设计，配备多轴指标，促进(foster)创新和实验。此外，TorchTitan还优先考虑了可解释性(interpretability)、生产级训练和PyTorch原生功能。它还提供了高性能训练，具有弹性可扩展性、全面的(comprehensive)训练配方(recipes)和指南，以及关于选择和结合分布式训练技术的专家指导。如实验部分所示，与优化的基线相比，TorchTitan在128个GPU规模下（Llama 3.1 8B）使用1D并行性提供了65.08%的训练加速，在256个GPU规模下（Llama 3.1 70B）使用2D并行性额外提供了12.59%的加速，在512个GPU规模下（Llama 3.1 405B）使用3D并行性再额外提供了30%的加速。凭借其强大的功能和高效性，TorchTitan是应对具有挑战性的LLM训练任务的理想一站式解决方案。<br>
 
+# 7 附录
+## A TorchTitan中的3D并行性分步指南
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们之前已经讨论了使用TorchTitan 3D并行性进行扩展的动机，以及为什么应用不同的并行性来将训练扩展到数千个GPU上。在本节中，我们将逐步介绍TorchTitan中的**3D并行性代码**。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;第一步是在meta-device上创建一个模型实例（例如，用于Llama模型的Transformer）。然后，我们根据**pipeline_parallel_split_points**配置，通过PP（流水线并行）将模型分割成多个PP stage。请注意，对于使用循环调度的PP，我们可能会从PP分割中获得多个model_parts，其中model_parts中的每个项都是一个stage-model-block。接下来，我们对每个模型部分应用SPMD（单程序多数据）风格的分布式训练技术，包括TP（张量并行）、激活检查点、torch.compile、FSDP（完全分片数据并行）以及混合精度训练，然后在实际在GPU上**初始化分片模型之前进行这些操作**。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了将PP（流水线并行）应用于模型，我们在高层运行下述代码. **pipeline_llama_manual_split**根据手动给定的**pipeline_parallel_split_points**配置，通过从完整模型（在元设备上）中移除未使用的模型组件，将模型分割成多个stage。然后，build_pipeline_schedule根据torch.distributed.pipelining中的各种选项构建流水线调度，包括1F1B（Narayanan等人，2019）、GPipe（Huang等人，2019）、Interleaved 1F1B（Narayanan等人，2021）等，这些选项由pipeline_parallel_schedule config指定。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TP（张量并行）和FSDP（完全分片数据并行）是在SPMD（单程序多数据）风格的**models_parallelize_fns**函数中应用的。为了应用TP，我们使用DTensor的**parallelize_module API**，并提供一个TP “plan”作为指导，说明模型参数应该如何被分片。在下面的示例中，我们展示了（不完整的）代码，用于对重复的TransformerBlock进行分片。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;最后，我们通过**包装每个单独的TransformerBlock**以及**整个模型**来应用FSDP（完全分片数据并行）。请注意，PyTorch中的FSDP2实现支持混合精度训练。默认情况下，我们**在参数全收集（all-gather）和激活计算上使用torch.bfloat16**，而**在梯度归约散射（reduce-scatter）通信和优化器更新上使用torch.float32**。<br>
+
+## B 补充材料
+### B.1 完全分片数据并行（FSDP2）
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP2对原始的FSDP1 FlatParameter分组进行了改进。具体来说，现在参数被表示为在张量维度0上分片的DTensor。这提供了与模型并行技术和其他**需要操作单个参数**的功能更好的组合性，允许分片状态字典(sharded state dict)由DTensor表示而无需任何通信，并通过DTensor提供了更简单的**元设备初始化流程**。例如，**FSDP2解锁了更细粒度的张量级量化**，特别是Float8张量量化，我们将在结果部分展示这一点。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;作为从FSDP1重写到FSDP2的一部分，FSDP2通过避免使用记录流(record stream)来实现了一个改进的内存管理系统。这使得内存释放变得确定，并因此相对于FSDP1降低了每个GPU的内存需求。例如，在Llama 2 7B上，与FSDP1相比，FSDP2记录的**GPU内存平均降低了7%**。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;此外，通过**编写高效的kernels来执行多张量的全收集（allgather）和归约散射（reduce scatter）操作**，FSDP2展现出了与FSDP1相当的性能，并且FSDP2还带来了轻微的性能提升。以Llama 2 7B为例，FSDP2的平均吞吐量比FSDP1快1.5%。<br>
+
+
+
+
+
+
