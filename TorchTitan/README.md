@@ -49,6 +49,8 @@
 2. 并行辅助工具(parallelism helpers)，它将数据并行、张量并行和流水线并行应用于特定模型；
 3. 一个通用的训练循环(training loop)。所有这些组件都可以通过TOML文件进行配置，并允许通过命令行进行覆盖，而且基于现有的代码库，很容易添加新的模型和并行技术。<br>
 
+![figure1](images/figure1.png)
+
 ## 2.1 可组合N维并行训练
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在本节中，我们将逐步介绍在大型集群上扩展模型训练的整个过程(entire regime)，包括元设备初始化和核心的可组合多维并行性，以展示在TorchTitan中如何组合这些技术来高效地训练规模不断增大(increasing scale)的大型语言模型（LLM）。TorchTitan中相应的实际代码片段可以在附录A中找到。<br>
 
@@ -202,11 +204,120 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;第一步是在meta-device上创建一个模型实例（例如，用于Llama模型的Transformer）。然后，我们根据**pipeline_parallel_split_points**配置，通过PP（流水线并行）将模型分割成多个PP stage。请注意，对于使用循环调度的PP，我们可能会从PP分割中获得多个model_parts，其中model_parts中的每个项都是一个stage-model-block。接下来，我们对每个模型部分应用SPMD（单程序多数据）风格的分布式训练技术，包括TP（张量并行）、激活检查点、torch.compile、FSDP（完全分片数据并行）以及混合精度训练，然后在实际在GPU上**初始化分片模型之前进行这些操作**。<br>
 
+```python
+# meta init
+with torch.device("meta"):
+    model = model_cls.from_model_args(model_config)
+
+# apply PP
+pp_schedule, model_parts = models_pipelining_fns[model_name](
+    model, pp_mesh, parallel_dims, job_config, device, model_config, loss_fn
+)
+
+# For PP with looped schedules, each item in model_parts is one stage-model-chunk.
+# We need to iterate through model_parts to apply SPMD parallelisms, compilation,
+# optimizer, and checkpointing
+for m in model_parts:
+    # apply SPMD-style distributed training techniques
+    models_parallelize_fns[model_name](m, world_mesh, parallel_dims, job_config)
+    # move sharded model to GPU and initialize weights via DTensor
+    m.to_empty(device=init_device)
+    m.init_weights(buffer_device=buffer_device)
+    m.train()
+```
+
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了将PP（流水线并行）应用于模型，我们在高层运行下述代码. **pipeline_llama_manual_split**根据手动给定的**pipeline_parallel_split_points**配置，通过从完整模型（在元设备上）中移除未使用的模型组件，将模型分割成多个stage。然后，build_pipeline_schedule根据torch.distributed.pipelining中的各种选项构建流水线调度，包括1F1B（Narayanan等人，2019）、GPipe（Huang等人，2019）、Interleaved 1F1B（Narayanan等人，2021）等，这些选项由pipeline_parallel_schedule config指定。<br>
+
+```python
+def pipeline_llama(
+    model: nn.Module,
+    pp_mesh: DeviceMesh,
+    parallel_dims: ParallelDims,
+    job_config: JobConfig,
+    device: DeviceType,
+    model_config: ModelArgs,
+    loss_fn: Callable[..., torch.Tensor],
+):
+    stages, models = pipeline_llama_manual_split(
+        model, pp_mesh, parallel_dims, job_config, device, model_config
+    )
+
+    pp_schedule = build_pipeline_schedule(job_config, stages, loss_fn)
+
+    return pp_schedule, models
+```
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TP（张量并行）和FSDP（完全分片数据并行）是在SPMD（单程序多数据）风格的**models_parallelize_fns**函数中应用的。为了应用TP，我们使用DTensor的**parallelize_module API**，并提供一个TP “plan”作为指导，说明模型参数应该如何被分片。在下面的示例中，我们展示了（不完整的）代码，用于对重复的TransformerBlock进行分片。<br>
 
+```python
+    # Apply tensor + sequence parallelism to every transformer block
+    # NOTE: At the cost of model code change, we can accelerate Sequence Parallel
+    #       by folding (and unfolding) the batch dimension and the sequence dimension.
+    #       Examples can be found at https://github.com/pytorch/torchtitan/pull/437
+    for layer_id, transformer_block in model.layers.items():
+        layer_plan = {
+            "attention_norm": SequenceParallel(),
+            "attention": prepare_module_input(
+                input_layouts=(Shard(1), None),
+                desired_input_layouts=(Replicate(), None),
+            ),
+            "attention.wq": colwise_parallel(),
+            "attention.wk": colwise_parallel(),
+            "attention.wv": colwise_parallel(),
+            "attention.wo": rowwise_parallel(output_layouts=Shard(1)),
+            "ffn_norm": SequenceParallel(),
+            "feed_forward": prepare_module_input(
+                input_layouts=(Shard(1),),
+                desired_input_layouts=(Replicate(),),
+            ),
+            "feed_forward.w1": colwise_parallel(),
+            "feed_forward.w2": rowwise_parallel(output_layouts=Shard(1)),
+            "feed_forward.w3": colwise_parallel(),
+        }
+
+        parallelize_module(
+            module=transformer_block,
+            device_mesh=tp_mesh,
+            parallelize_plan=layer_plan,
+        )
+```
+
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;最后，我们通过**包装每个单独的TransformerBlock**以及**整个模型**来应用FSDP（完全分片数据并行）。请注意，PyTorch中的FSDP2实现支持混合精度训练。默认情况下，我们**在参数全收集（all-gather）和激活计算上使用torch.bfloat16**，而**在梯度归约散射（reduce-scatter）通信和优化器更新上使用torch.float32**。<br>
+
+```python
+def apply_fsdp(
+    model: nn.Module,
+    dp_mesh: DeviceMesh,
+    param_dtype: torch.dtype,
+    reduce_dtype: torch.dtype,
+    tp_enabled: bool,
+    pp_enabled: bool,
+    cpu_offload: bool = False,
+):
+    """
+    Apply data parallelism to the model. FSDP2 is used here.
+    """
+    mp_policy = MixedPrecisionPolicy(param_dtype=param_dtype, reduce_dtype=reduce_dtype)
+    fsdp_config = {"mesh": dp_mesh, "mp_policy": mp_policy}
+    if cpu_offload:
+        fsdp_config["offload_policy"] = CPUOffloadPolicy()
+
+    for layer_id, transformer_block in model.layers.items():
+        if pp_enabled:
+            # For PP, do not reshard after forward to avoid per-microbatch
+            # all-gathers, which can be expensive and non-overlapped
+            reshard_after_forward = False
+        else:
+            # As an optimization, do not reshard after forward for the last
+            # transformer block since FSDP would prefetch it immediately
+            reshard_after_forward = int(layer_id) < len(model.layers) - 1
+        fully_shard(
+            transformer_block,
+            **fsdp_config,
+            reshard_after_forward=reshard_after_forward,
+        )
+    fully_shard(model, **fsdp_config, reshard_after_forward=not pp_enabled)
+```
 
 ## B 补充材料
 ### B.1 完全分片数据并行（FSDP2）
@@ -236,9 +347,28 @@
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;用法：由于张量并行（TP）和序列并行（SP）之间的协同关系，TorchTitan原生地将这两者结合在一起，并且它们共同受命令行或TOML文件中的tensor_parallel_degree设置的控制。例如，将此设置为2意味着节点内的2个GPU将通过TP分担每个Transformer层的注意力机制和多层感知机（MLP）模块的计算负载，而**通过序列并行分担归一化/丢弃层（normalization/dropout layers）的计算负载**。损失并行（Loss Parallel）是通过上下文管理器实现的，因为它需要控制模型前向计算之外的损失计算。可以通过enable_loss_parallel来启用它。<br>
 
+![images](images/figure3.png)
 
+![images](images/figure4.png)
 
+### B.4 管道并行（Pipeline Parallelism）
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们提供了几个参数来配置管道并行（Pipeline Parallelism，简称PP）。这些参数包括：<br>
+- pipeline_parallel_degree：控制参与管道并行的rank数量。Rank在这里指的是参与分布式计算的不同节点或进程。<br>
+- pipeline_parallel_split_points：接受一个字符串列表，这些字符串表示在进行分割之前的层的完全限定名称。因此，管道阶段的总数V将由这个列表的长度决定。每个字符串代表模型中的一个特定层，在这个层之前，数据将被分割到不同的管道阶段进行处理。<br>
+- pipeline_parallel_schedule：接受要使用的调度策略的名称。如果调度是多阶段的，则每个管道rank应被分配V > 1个阶段，否则V == 1（即没有实际的管道并行）。调度策略决定了数据如何在不同的管道阶段之间流动和处理。<br>
+- pipeline_parallel_microbatches：控制将一个数据批次分割成的微批次数量。微批次是一种将大数据批次分割成更小、更易于管理的部分进行处理的技术，有助于减少内存使用和提高并行效率。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;通过这些参数，用户可以灵活地配置管道并行，以适应不同的模型架构、数据大小和硬件资源。这种灵活性使得管道并行成为一种强大的工具，可以显著提高大规模深度学习模型的训练效率。<br>
 
+### B.5 激活检查点
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TorchTitan提供了两种选择性激活检查点，它们能够**在内存和重新计算之间实现更细致的权衡**。具体来说，我们提供了选择性地对“per layer”或“per op”设置检查点的选项。对per op设置检查点的目标是释放那些重新计算速度较快的op所占用的内存，并为那些重新计算速度较慢的op节省中间数据（内存），从而在实现吞吐量与内存之间更有效的权衡。<br>
 
+**使用方法Usage：** 激活检查点（AC）可通过命令行或TOML文件中的两行设置来启用。具体来说，模式可以是none（无）、selective（选择性）或full（完全）。当设置为selective时，将使用下一个配置**selective_ac_type**，它可以是正整数以启用选择性layer检查点，或者是op以启用选择性op检查点。对于每层检查点，需要输入一个整数来指导检查点策略，其中1 = 每层都设置检查点（与full相同），2 = 每隔一层设置检查点，3 = 每隔两层设置检查点，以此类推。对于per op（operation）检查点，则由parallelize_llama.py中的 **_save_list** 策略驱动，该策略会标记高算术强度的操作（如matmul（矩阵乘法）和SDPA（缩放点积注意力））以保存中间结果，而允许其他较低强度的操作被重新计算。请注意，为了平衡总体吞吐量，只有每隔一个matmul操作会被标记为保存。<br>
 
+### B.6 AsyncTP（异步张量并行）
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;AsyncTP中使用的SymmetricMemory collectives操作比标准的NCCL集体操作更快，其工作原理是**让每个GPU分配一个相同的内存缓冲区，以便提供直接的P2P（点对点）访问**。SymmetricMemory依赖于节点内的NVSwitch，因此通常仅适用于H100或更新型号的GPU。<br>
+
+**使用方法：** 在TorchTitan的TOML配置文件的实验部分中启用AsyncTP，并通过**enable_async_tensor_parallel**布尔设置来打开或关闭它。<br>
+
+### B.7 在TorchTitan中自定义FSDP2混合精度
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在TorchTitan中，混合精度由**apply_fsdp**函数中的**MixedPrecisionPolicy**类控制，该类随后通过param_dtype设置为BF16进行自定义，而reduce_dtype默认设置为FP32。reduce_dtype为FP32意味着在反向传播过程中进行梯度计算的reduce-scatter操作将在FP32中进行，以帮助最大程度地提高梯度更新的稳定性和精度。<br>
 
