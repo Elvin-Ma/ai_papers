@@ -212,9 +212,30 @@
 ### B.1 完全分片数据并行（FSDP2）
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;FSDP2对原始的FSDP1 FlatParameter分组进行了改进。具体来说，现在参数被表示为在张量维度0上分片的DTensor。这提供了与模型并行技术和其他**需要操作单个参数**的功能更好的组合性，允许分片状态字典(sharded state dict)由DTensor表示而无需任何通信，并通过DTensor提供了更简单的**元设备初始化流程**。例如，**FSDP2解锁了更细粒度的张量级量化**，特别是Float8张量量化，我们将在结果部分展示这一点。<br>
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;作为从FSDP1重写到FSDP2的一部分，FSDP2通过避免使用记录流(record stream)来实现了一个改进的内存管理系统。这使得内存释放变得确定，并因此相对于FSDP1降低了每个GPU的内存需求。例如，在Llama 2 7B上，与FSDP1相比，FSDP2记录的**GPU内存平均降低了7%**。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;作为从FSDP1重写到FSDP2的一部分，FSDP2通过避免使用记录流(record stream)来实现了一个**改进的内存管理系统**。这使得**内存释放变得确定**，并因此相对于FSDP1降低了每个GPU的内存需求。例如，在Llama 2 7B上，与FSDP1相比，FSDP2记录的**GPU内存平均降低了7%**。<br>
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;此外，通过**编写高效的kernels来执行多张量的全收集（allgather）和归约散射（reduce scatter）操作**，FSDP2展现出了与FSDP1相当的性能，并且FSDP2还带来了轻微的性能提升。以Llama 2 7B为例，FSDP2的平均吞吐量比FSDP1快1.5%。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;性能的提升得益于采用了两项小的性能改进。首先，对于FP32的reduce scatter操作，只运行了一个单独的除法内核（在本地FP32 reduce-scatter梯度上直接除以world size，而不是分两步在通信前后均除以world size的平方根）。其次，在TorchTitan中，FSDP2默认在正向传播过程中不对transformer层的最后一个block进行分片，因为它在反向传播的开始时会立即被re-gathered。因此，我们可以省去一轮通信延迟。<br>
+
+**用法(Usage)：** TorchTitan已完全集成FSDP2作为默认的并行方式，data_parallel_shard_degree是命令行或TOML文件中的控制维度。为方便使用，请注意，将data_parallel_shard_degree设置为-1（这是默认值）意味着将简单地使用所有可用的GPU（即无需指定实际的world size大小）。<br>
+
+### B.2 混合分片数据并行
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;混合切片数据并行（Hybrid Sharded Data Parallel, HSDP）是切片数据并行（FSDP）（Zhang等，2022）的扩展，它支持使用更大的total world size。在FSDP中，所有设备都是单个全局组的一部分，该组内启用所有通信。然而，在某个点上，增加更多计算会被由于添加更多需要平等参与通信的参与者而产生的**不断增加的通信开销**所抵消。这是因为**集体通信的延迟(collective communication)与参与者的总数直接相关**。在这个饱和点上，即使增加了更多计算，FSDP的吞吐量也会趋于稳定。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;HSDP通过在**原始全局组（称为“ocean”）** 内创建较小的**分片组（称为“islands”）** 来在一定程度上避免了(obviates)这个问题。每个分片组在其**内部运行FSDP**，并且在反向传播过程中**以设定的频率在分片组之间同步梯度**，以确保维护全局梯度。这确保了通信的快速进行，因为现在总参与者通信量只是原始world size的一部分，并且**唯一的全局通信是分片组之间的梯度全归约（all-reduce）**。通过使用分片组，我们发现HSDP相对于FSDP的通信饱和点可以将总world size扩展3-6倍（这取决于网络互连的速度）。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;TorchTitan 使得通过命令行或 TOML 文件运行 HSDP 变得简单，用户可配置分片组大小和复制组大小这两个设置。<br>
+
+**使用方法(Usage)：** 在TorchTitan中，通过修改前面提到的**data_parallel_shard_degree** knob数据来启用HSDP，以控制分片组的大小。这实际上是将在其对应组成员之间运行FSDP的GPU组数。接下来，我们必须指定**data_parallel_replicate_degree**，它控制着我们要**创建多少个分片组**。复制度(replicate degree)和分片度(shard degree)的乘积必须等于总的world size(即总的GPU数量)。例如，在一个有128个GPU的集群上，我们可能会发现对模型大小来说，在16个GPU上进行分片就足够了。因此，我们将data_parallel_shard_degree设置为16，并相应地将data_parallel_replicate_degree设置为8，这意味着我们将有8个由16个GPU组成的组来填满总共128个GPU的world size。<br>
+
+### B.3 张量并行
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;张量并行（Tensor Parallel，TP）将Transformer层中的注意力（attention）和前馈网络（MLP，即多层感知机）模块跨多个设备进行分区，其中使用的设备数量即为TP度(TP degree)。这样，多个GPU可以协同处理一个原本会超出单个GPU处理能力的Transformer层，但代价是需要增加全归约(all-reduce)、全收集(all-gather)和归约散射(reduce-scatter)等操作来同步中间结果。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于张量并行（TP）引入了额外的集体通信操作(all-reduce)，因此它需要在快速网络(如NVLink)上进行。在训练大型语言模型（LLMs）时，TP通常与完全分片数据并行（FSDP）结合使用，其中**TP在节点内部进行分片，而FSDP在节点之间进行分片**，从而在不同设备网格维度上创建二维层次分片。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;用法：由于张量并行（TP）和序列并行（SP）之间的协同关系，TorchTitan原生地将这两者结合在一起，并且它们共同受命令行或TOML文件中的tensor_parallel_degree设置的控制。例如，将此设置为2意味着节点内的2个GPU将通过TP分担每个Transformer层的注意力机制和多层感知机（MLP）模块的计算负载，而**通过序列并行分担归一化/丢弃层（normalization/dropout layers）的计算负载**。损失并行（Loss Parallel）是通过上下文管理器实现的，因为它需要控制模型前向计算之外的损失计算。可以通过enable_loss_parallel来启用它。<br>
+
 
 
 
