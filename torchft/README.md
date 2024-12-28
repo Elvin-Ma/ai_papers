@@ -92,6 +92,7 @@ message KillRequest {
  string msg = 1;
 }
 message KillResponse {}
+
 service ManagerService {
  rpc Quorum (ManagerQuorumRequest) returns (ManagerQuorumResponse);
  rpc CheckpointAddress(CheckpointAddressRequest) returns
@@ -99,9 +100,198 @@ service ManagerService {
  rpc ShouldCommit(ShouldCommitRequest) returns (ShouldCommitResponse);
  rpc Kill(KillRequest) returns (KillResponse);
 }
+```
 
 # 5 User Facing API (用户侧API)
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;大部分所需的复杂性都可以隐藏在一个类似于现有优化器step模式的API之后，而无需对用户模型进行任何更改。<br>
+
+## 5.1 Manager
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;manager class实现了PAFT算法的**核心逻辑**，负责与manager server管理服务器（从而与lighthouse/quorum）进行通信，管理进程组(processgroup)，并处理checkpoint/recovery操作。<br>
+
+- [manager code](https://github.com/pytorch-labs/torchft/blob/main/torchft/manager.py)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这里有几个关键方法：<br>
+1. step
+   - 获取新的仲裁节点(quorum)，并根据需要保存/加载检查点。
+3. allreduce
+   - called to **reduce the gradients** across nodes. (跨节点进行 reduce)
+5. should_commit
+   - 调用此函数以确定是否发生任何错误以及优化器是否需要step。
+  
+```python
+class FaultToleranceManager:
+ """
+ This manages all fault tolerance within the worker.
+ """
+ def __init__(self, save_state_dict: Callable[[], Dict], load_state_dict:
+Callable[[Dict], None]) -> None:
+   """
+   Args:
+   save_state_dict: callback to run to save the current node
+  state_dict
+   load_state_dict: callback to run to load a remote state_dict
+   """
+   self.lighthouse_address = os.environ["TORCH_LIGHTHOUSE"]
+   self.save_state_dict = save_state_dict
+   self.load_state_dict = load_state_dict
+   if rank == 0:
+   # run the manager on rank0 node, address can be shared via tcpstore
+   # for bootstrapping within the group
+   self.manager = new_manager(...)
+   self.client = new_client(...)
+   self.checkpoint_server = new_server(self.save_state_dict)
+
+ def step(self, step: int) -> None:
+   """
+   This must be called at the start of each step with the step
+   matching the currently loaded checkpoint.
+   This will get the new quorum and load/save any checkpoints as necessary
+   to maintain quorum.
+   This will run the quroum and checkpoint load asynchronously.
+   """
+   quorum = self.client.quorum(...)
+   max_step = max(g.step for g in quorum.members)
+   if step != max_step:
+   self.load_state_dict(...)
+   if changed(quorum):
+   # restart the process group
+   self.pg.kill()
+   self.pg.start()
+
+  def allreduce(self, gradients: torch.Tensor) -> None:
+     """
+     This will block until the quorum is available and then do the all
+     reduce.
+     The reduced tensors will be scaled by the number of active
+     participants.
+     """
+    ...
+  def should_commit(self) -> bool:
+     """
+     Whether the allreduces were completed safely and we should step the
+     optimizer.
+     """
+     ...
+```
+
+## 5.2 Wrapping the Optimizer + DistributedDataParallel
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于我们的钩子与优化器和DistributedDataParallel辅助工具中的现有步骤相当吻合，我们可以只用轻量级的包装器来包装现有概念，必要时调用torchft钩子。<br>
+
+- [optimizer wrapper](https://github.com/pytorch-labs/torchft/blob/main/torchft/optim.py)
+
+```python
+class OptimizerWrapper(Optimizer):
+"""
+    This wraps any provided optimizer and in conjunction with the manager will
+  provide fault tolerance.
+    zero_grad() must be called at the start of the forwards pass and step()
+  must be called at the end of the backwards pass.
+   Depending on the state of the manager, the optimizer will either commit the
+   gradients to the wrapped optimizer or ignore them.
+ """
+ def __init__(self, manager: "Manager", optim: Optimizer) -> None:
+   self.optim = optim
+   self.manager = manager
+ def zero_grad(self, set_to_none: bool = True) -> None:
+   self.manager.step()
+   self.optim.zero_grad(set_to_none)
+ def step(self, closure: Optional[object] = None) -> None:
+   assert closure is None, "optimizers that use closures are not
+  supported"
+   if self.manager.should_commit():
+   self.optim.step()
+ ...
+```
+
+- [DDP Wrapper](https://github.com/pytorch-labs/torchft/blob/main/torchft/ddp.py)
+
+```python
+class DistributedDataParallel(parallel.DistributedDataParallel):
+  """
+  This is a patched DistributedDataParallel implementation that makes it
+  compatible with torchft.
+  Important notes:
+  * This requires states to be synced on step 0 using an external mechanism
+  rather than an internal broadcast (torchft.Manager will do this).
+   * Using non-basic features of the DDP may cause your model to catch fire as
+   they haven't been tested with torchft.
+   * This doesn't any sanity checks such as verifying parameter sizes are the
+   same across workers.
+  """
+
+  def __init__(self, manager: "Manager", module: nn.Module, **kwargs: object)
+-> None:
+     # use a dummy PG to soak up the init all reduce, actual comms will go
+     # through the comm_hook.
+     pg = ProcessGroupDummy(0, 1)
+     super().__init__(
+     module,
+     process_group=pg,
+     # pyre-fixme[6]: got object
+     **kwargs,
+     )
+     self.register_comm_hook(manager, self._comm_hook)
+
+   @staticmethod
+   def _comm_hook(
+   state: "Manager", bucket: dist.GradBucket
+   ) -> torch.futures.Future[torch.Tensor]:
+   return state.allreduce_grad(bucket.buffer())
+```
+
+## 5.3 Wrapping ProcessGroups
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于其他库，我们可以使用一种**容错版本的ProcessGroup**。这种扩展的可重配置ProcessGroup会**吞掉(swallow)所有错误**，而不是将它们暴露给模型代码。这使我们能够以最小的更改干净地与FSDP等库集成。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在最简单的情况下，通过吞掉(swallowing)所有错误并始终向模型代码报告成功，底层库无需进行任何代码更改，并且我们可以在训练循环结束时决定是否提交优化器的更改。<br>
+
+**所需的库约定(contract)：**
+- 当使用动态批量大小时，**库需要能够容忍ProcessGroup的全局大小变化**，并在通信钩子中检查PG.world_size并相应地进行缩放。<br>
+- 库需要能够容忍ProcessGroup **在出错时返回的“默认/零”值张量**，因为此时真实值未知。<br>
+- 库的通信模式必须完全确定且无状态。即，不在第一个批量时进行广播，并且在模型的每个step中进行相同的集体调用。<br>
+
+- [Wrapping processGroups](https://github.com/pytorch-labs/torchft/blob/main/torchft/process_group.py#L443-L468
+)
+
+# 6 Example Train Loop
+- [完整expample](https://github.com/pytorch-labs/torchft/blob/main/train_ddp.py)
+
+```python
+model = resnet18()
+
+dataloader = ...
+
+manager = FaultToleranceManager(model.state_dict, model.load_state_dict)
+
+optimizer = OptimizerWrapper(manager, optim.SGD())
+
+model = DistributedDataParallel(manager, model)
+
+for inputs, labels in dataloader:
+ # must be called at the beginning of each train loop
+ # Quorum computation is triggered here but only needed in the backwards pass.
+ optimizer.zero_grad()
+ out = m(inputs)
+ loss = criterion(out, labels)
+ # Gradient allreduce overlaps with the backwards pass.
+ loss.backward()
+ # must be called at the end of the train loop
+ # This may not actually step the optimizer if an error occured during grad allreduce.
+ optimizer.step()
+ if manager.current_step() >= 10000:
+   # complete training
+   break
+```
+
+# 7 Lighthouse – Quorum(法定人数) Algorithm
+
+
+
+
+
+
+
+
+
 
 
 
