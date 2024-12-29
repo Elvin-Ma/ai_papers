@@ -18,7 +18,7 @@
 - 副本组(Replica Group)– a group of worker nodes that make up one slice of the job。训练在replica之间是数据并行的。每个秩（rank）n都拥有模型的相同分片，并在副本组之间进行复制。<br>
 - torchelastic agent代理 : 在每个worker host运行的agent，负责启动副本组中的工作进程，并在发生error时重启它们。<br>
 
-$ 4 Service APIs 服务端api
+# 4 Service APIs 服务端api
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;以下是每个服务的RPC（远程过程调用）定义。<br>
 
 *(RPC，全称Remote Procedure Call，即远程过程调用，是一种计算机通信协议。它允许一个计算机程序通过网络调用另一个计算机程序中的子程序（也就是远程过程），并获取返回值。RPC是分布式计算的重要基础，使得分布式计算应用更加方便和高效。)* <br>
@@ -177,7 +177,7 @@ Callable[[Dict], None]) -> None:
 ## 5.2 Wrapping the Optimizer + DistributedDataParallel
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于我们的钩子与优化器和DistributedDataParallel辅助工具中的现有步骤相当吻合，我们可以只用轻量级的包装器来包装现有概念，必要时调用torchft钩子。<br>
 
-- [optimizer wrapper](https://github.com/pytorch-labs/torchft/blob/main/torchft/optim.py)
+- [optimizer wrapper code](https://github.com/pytorch-labs/torchft/blob/main/torchft/optim.py)
 
 ```python
 class OptimizerWrapper(Optimizer):
@@ -203,7 +203,7 @@ class OptimizerWrapper(Optimizer):
  ...
 ```
 
-- [DDP Wrapper](https://github.com/pytorch-labs/torchft/blob/main/torchft/ddp.py)
+- [DDP Wrapper code](https://github.com/pytorch-labs/torchft/blob/main/torchft/ddp.py)
 
 ```python
 class DistributedDataParallel(parallel.DistributedDataParallel):
@@ -253,7 +253,7 @@ class DistributedDataParallel(parallel.DistributedDataParallel):
 )
 
 # 6 Example Train Loop
-- [完整expample](https://github.com/pytorch-labs/torchft/blob/main/train_ddp.py)
+- [expample address](https://github.com/pytorch-labs/torchft/blob/main/train_ddp.py)
 
 ```python
 model = resnet18()
@@ -310,8 +310,7 @@ for inputs, labels in dataloader:
 
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;使用NCCL错误处理的一种替代方法是简单地**在子进程中运行它**。这个子进程可以**由父进程管理**，当发生错误或仲裁变化时，在所有节点上终止并重新创建该子进程。<br>
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我已经编写了一个原型来测试这一行为:<br>
-[地址](https://gist.github.com/d4l3k/63e9ba2204fb59b7347b662476557c5d)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我已经编写了一个原型来测试这一行为: [地址](https://gist.github.com/d4l3k/63e9ba2204fb59b7347b662476557c5d)
 
 **性能考虑：** <br>
 - CUDA张量可以通过CUDA IPC在进程之间共享，因此性能影响应该很小;
@@ -377,9 +376,11 @@ init_process_group(store)
 ## 13.1 Baby-NCCL Overhead Tests(baby-nccl 开销测试)
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;内存开销似乎约为1GB——尚不清楚为什么**BabyNCCL子进程使用的内存比在主进程中运行所有内容要多**。这可能是由于缓冲区(buffers)等在主进程中未初始化，因为这是一个非常简化的测试。<br>
 
-
+- pytorch 但卡运行显存
 ![figure5](images/figure5.png)
 
+- multi-threads 显存占用
 ![figure6](images/figure6.png)
 
+- subprocess with nccl 显存占用
 ![figure7](images/figure7.png)
