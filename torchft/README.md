@@ -303,15 +303,83 @@ for inputs, labels in dataloader:
 # 8 Lighthouse – Fault Tolerance
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们假设单个节点故障的可能性太小，不值得担心。然而，如果这确实成了一个问题，我们可以采取一些简单的措施，比如准备一个按顺序尝试的lighthouse列表（假设一个节点对所有人来说要么处于运行状态，要么处于宕机状态），或者采取更复杂的措施，让lighthouse使用复制的Raft状态机。<br>
 
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们还预计，在开源软件（OSS）使用中，一个灯塔可以管理多个作业。<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们还预计，在开源软件（OSS）使用中，一个lighthouse可以管理多个jobs。<br>
+
+# 9 Data Plane – Fault Tolerance: Baby NCCL
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**NCCL在发生error以及调用NCCL comm abort时容易(prone)陷入死锁**。在开源版本中，其中一些问题已经得到了修复，但目前还不清楚修复到了什么程度，因为我还没有广泛使用过。此外，听说NVIDIA正在努力使NCCL更安全，但它还没有完全准备好。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;使用NCCL错误处理的一种替代方法是简单地**在子进程中运行它**。这个子进程可以**由父进程管理**，当发生错误或仲裁变化时，在所有节点上终止并重新创建该子进程。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我已经编写了一个原型来测试这一行为:<br>
+[地址](https://gist.github.com/d4l3k/63e9ba2204fb59b7347b662476557c5d)
+
+**性能考虑：** <br>
+- CUDA张量可以通过CUDA IPC在进程之间共享，因此性能影响应该很小;
+- 每个进程需要自己的CUDA上下文，这会增加一些开销。根据简单测试，大约1GB;
+- 原型(protoType)使用CPU同步，我们应该改为从一个进程传递一个CUDA Event到另一个进程来等待，这样可以**避免阻塞GPU**;
+- torch的多进程处理**使用子进程的引用计数**——如果我们终止子进程，可能无法释放内存，从而导致内存泄漏。我们需要一个额外的机制来**强制torch在终止子进程时释放内存**.
+
+# 10 ProcessGroup Bootstrap(引导)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;进程组需要一个存储(store)来进行引导(Bootstrap)。我们希望尽可能并行化初始化过程，因此我们想使用多个TCP存储。为了分散存储的负载，我们可以根据rank信息确定性地选择一个存储。<br>
+
+*(TCPStores可能指的是基于TCP协议实现的存储服务或存储系统，这些服务或系统通常用于在网络环境中存储和检索数据。在分布式系统和并行计算中，TCPStores可以作为一个关键组件，用于在不同的计算节点之间共享数据。)* <br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们有几个选项——最简单的是每个manager一个TCPStore，但如果性能成为瓶颈，我们可以改用每个进程（或rank）一个TCPStore。<br>
+
+## 10.1 Per Manager TCPStore(每个管理器一个TCPStore)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;运行每个manager一个TCPStore是理想的选择，因为它简化了部署模型，并且我们应该能够获得足够的性能。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;以10个replica groups和8k的global size为例，每个存储只需要与8k个workers进程通信。TCPStore已经测试过可以达到约200k QPS（每秒查询数），因此，对于2*8k的操作，我们应该能够在一秒内完成初始化。<br>
+
+## 10.2 Per Node TCPStore (less preferred 非首选)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这需要在每台机器/副本(replica)上运行一个存储(store)服务，这意味着每台主机上都需要额外部署一个服务。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;为了**解析IP地址**，我们需要联系指定的(specified)副本组中的rank0 torchft服务器。为了减轻负载，我们可以采用轮询方式选择活动的存储服务，以减少对每个副本组的查找请求数量。<br>
+
+```python
+# Algorithm for determining active TCPStore
+replica_groups, quorum_id = get_quorum_for_step(step)
+replica_groups = sorted(replica_groups)
+# We want to round robin pick which replica group is the leader for every node
+to minimize load on any rank0 replica group for IP address resolution.
+store_replica_group = replica_group[rank % len(replica_groups)]
+store_address = torchft.get_ip_address(store_replica_group, rank)
+store = TCPStore(store_address, master=False)
+store = PrefixStore(store, f"/{quorum_id}/{rank}") # stores are shared so
+isolate via prefix
+init_process_group(store)
+```
+
+## 10.3 Checkpoint Restore
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;在大多数情况下，我们会直接从另一个工作节点的状态进行恢复。这需要与该副本组的管理器进行通信，以获取**检查点服务器**的地址。这些请求也可以在各个manager之间进行负载均衡，以避免在地址交换过程中出现任何瓶颈。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;每个manager获取rank，作为quorum的一部分, 并将其缓存。 这样如果未来的副本replica需要该地址，它们可以直接向manager请求。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如下图表是从另一张海报中提取的，其中“rank”的术语与本文档其他部分的术语并不完全一一对应。<br>
+
+![figure3](images/figure3.png)
+
+![figure4](images/figure4.png)
+
+# 11 DDP – Composability 可组合性
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们当前的DDP封装具有一些初始状态同步功能，这可能会导致死锁，因为**并非所有副本(replica)都会同时启动**。我们可以轻松地将FaultToleranceManager封装在一个PG中，这样除了启动过程外，大部分功能都将兼容。<br>
+
+- [Example of sync in DDP](https://github.com/pytorch/pytorch/blob/76b044d7cb987081aaaf5b381b74c93543023f7f/torch/nn/parallel/distributed.py#L827-L829)
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们应该保持API兼容性，但可能需要为torchft（即torchft.DistributedDataParallel）提供一个自定义的入口点。<br>
+
+# 12 FSDPv2 – Composability
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;对于开源的FSDP（Fully Sharded Data Parallel），我们很可能可以通过在FSDPv2中对**HSDP**（Hybrid Sharded Data Parallel）的支持，传入一个带有我们自定义参数组（PG）的DeviceMesh，以实现数据并行维度。<br>
+
+[FSDP](https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/fully_sharded_data_parallel.py/#L1187-L1192)
+
+# 13 Appendix
+
+## 13.1 Baby-NCCL Overhead Tests(baby-nccl 开销测试)
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;内存开销似乎约为1GB——尚不清楚为什么**BabyNCCL子进程使用的内存比在主进程中运行所有内容要多**。这可能是由于缓冲区(buffers)等在主进程中未初始化，因为这是一个非常简化的测试。<br>
 
 
+![figure5](images/figure5.png)
 
+![figure6](images/figure6.png)
 
-
-
-
-
-
-
-
+![figure7](images/figure7.png)
