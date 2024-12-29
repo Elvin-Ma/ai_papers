@@ -283,9 +283,27 @@ for inputs, labels in dataloader:
 ```
 
 # 7 Lighthouse – Quorum(法定人数) Algorithm
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于每个法定人数（quorum）都可以通过使用时间窗口来计算而无需了解过去的step，因此我们不需要任何重复的状态。这使得算法非常简单，并且只需稍作调整即可在没有成员变化的情况下进行优化。<br>
 
+1. A manager requeset quorum : <br>
+- a. 这将启动一个计时器，其持续时间取决于工作节点是否参与了前一个quorum，以便在启动期间允许**额外的时间**。
+2. 如果计时器到期且有足够的节点加入： <br>
+- a. 新的quorum将被广播
+3. 如果计时器到期但没有足够的节点加入: <br>
+- a. 我们将延长计时器
+4.（快速路径）如果前一个quorum中的所有组都已加入 <br>
+- a. 我们可以跳过计时器，直接广播新的quorum
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这个算法应该很容易实现，并且由于Lighthouse是一个单一进程来做出所有quorum的决策，因此也易于调试和推理。<br>
 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;如果由于任何原因**新的quorum不合适**，training step将会失败，manager将会请求一个新的quorum。这消除了quorum算法中的大部分复杂性，因为我们只关心最新的状态。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;这种算法应该比其他quorum算法具有更好的扩展性(scale)，因为它没有复制开销，并且单个节点在必要时应该能够处理数千个组(group)，以满足DDP应用的需求。<br>
+
+# 8 Lighthouse – Fault Tolerance
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们假设单个节点故障的可能性太小，不值得担心。然而，如果这确实成了一个问题，我们可以采取一些简单的措施，比如准备一个按顺序尝试的lighthouse列表（假设一个节点对所有人来说要么处于运行状态，要么处于宕机状态），或者采取更复杂的措施，让lighthouse使用复制的Raft状态机。<br>
+
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们还预计，在开源软件（OSS）使用中，一个灯塔可以管理多个作业。<br>
 
 
 
