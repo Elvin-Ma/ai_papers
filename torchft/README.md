@@ -177,7 +177,7 @@ Callable[[Dict], None]) -> None:
 ## 5.2 Wrapping the Optimizer + DistributedDataParallel
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;由于我们的钩子与优化器和DistributedDataParallel辅助工具中的现有步骤相当吻合，我们可以只用轻量级的包装器来包装现有概念，必要时调用torchft钩子。<br>
 
-- [optimizer wrapper](https://github.com/pytorch-labs/torchft/blob/main/torchft/optim.py)
+- [optimizer wrapper code](https://github.com/pytorch-labs/torchft/blob/main/torchft/optim.py)
 
 ```python
 class OptimizerWrapper(Optimizer):
@@ -203,7 +203,7 @@ class OptimizerWrapper(Optimizer):
  ...
 ```
 
-- [DDP Wrapper](https://github.com/pytorch-labs/torchft/blob/main/torchft/ddp.py)
+- [DDP Wrapper code](https://github.com/pytorch-labs/torchft/blob/main/torchft/ddp.py)
 
 ```python
 class DistributedDataParallel(parallel.DistributedDataParallel):
@@ -253,7 +253,7 @@ class DistributedDataParallel(parallel.DistributedDataParallel):
 )
 
 # 6 Example Train Loop
-- [完整expample](https://github.com/pytorch-labs/torchft/blob/main/train_ddp.py)
+- [expample address](https://github.com/pytorch-labs/torchft/blob/main/train_ddp.py)
 
 ```python
 model = resnet18()
