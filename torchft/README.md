@@ -376,11 +376,11 @@ init_process_group(store)
 ## 13.1 Baby-NCCL Overhead Tests(baby-nccl 开销测试)
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;内存开销似乎约为1GB——尚不清楚为什么**BabyNCCL子进程使用的内存比在主进程中运行所有内容要多**。这可能是由于缓冲区(buffers)等在主进程中未初始化，因为这是一个非常简化的测试。<br>
 
-- pytorch 但卡运行显存
+- pytorch 但卡运行显存 <br>
 ![figure5](images/figure5.png)
 
-- multi-threads 显存占用
+- multi-threads 显存占用 <br>
 ![figure6](images/figure6.png)
 
-- subprocess with nccl 显存占用
+- subprocess with nccl 显存占用 <br>
 ![figure7](images/figure7.png)
