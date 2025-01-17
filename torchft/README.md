@@ -327,7 +327,7 @@ for inputs, labels in dataloader:
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;我们有几个选项——最简单的是每个manager一个TCPStore，但如果性能成为瓶颈，我们可以改用每个进程（或rank）一个TCPStore。<br>
 
 ## 10.1 Per Manager TCPStore(每个管理器一个TCPStore)
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;运行每个manager一个TCPStore是理想的选择，因为它简化了部署模型，并且我们应该能够获得足够的性能。
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;运行每个manager一个TCPStore是理想的选择，因为它简化了部署模型，并且我们应该能够获得足够的性能。<br>
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;以10个replica groups和8k的global size为例，每个存储只需要与8k个workers进程通信。TCPStore已经测试过可以达到约200k QPS（每秒查询数），因此，对于2*8k的操作，我们应该能够在一秒内完成初始化。<br>
 
 ## 10.2 Per Node TCPStore (less preferred 非首选)
