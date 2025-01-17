@@ -291,6 +291,7 @@ for inputs, labels in dataloader:
 - a. 新的quorum将被广播
 3. 如果计时器到期但没有足够的节点加入: <br>
 - a. 我们将延长计时器
+  
 4.（快速路径）如果前一个quorum中的所有组都已加入 <br>
 - a. 我们可以跳过计时器，直接广播新的quorum
 
